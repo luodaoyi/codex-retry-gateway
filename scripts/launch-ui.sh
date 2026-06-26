@@ -29,4 +29,8 @@ if command -v node.exe >/dev/null 2>&1; then
   done
   ARGS=("${NORMALIZED_ARGS[@]}")
 fi
-"$NODE_BIN" "$SCRIPT_DIR/launch-ui.mjs" "${ARGS[@]}"
+if [[ ${#ARGS[@]} -eq 0 ]]; then
+  "$NODE_BIN" "$SCRIPT_DIR/launch-ui.mjs"
+else
+  "$NODE_BIN" "$SCRIPT_DIR/launch-ui.mjs" "${ARGS[@]}"
+fi

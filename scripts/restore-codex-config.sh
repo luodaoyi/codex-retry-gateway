@@ -29,4 +29,8 @@ if command -v node.exe >/dev/null 2>&1; then
   done
   ARGS=("${NORMALIZED_ARGS[@]}")
 fi
-"$NODE_BIN" "$SCRIPT_DIR/restore-codex-config.mjs" "${ARGS[@]}"
+if [[ ${#ARGS[@]} -eq 0 ]]; then
+  "$NODE_BIN" "$SCRIPT_DIR/restore-codex-config.mjs"
+else
+  "$NODE_BIN" "$SCRIPT_DIR/restore-codex-config.mjs" "${ARGS[@]}"
+fi
