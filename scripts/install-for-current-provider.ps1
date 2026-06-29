@@ -78,7 +78,7 @@ $gatewayConfig = [ordered]@{
   listen_host = $ListenHost
   listen_port = $ListenPort
   upstream_base_url = $originalBaseUrl
-  request_body_limit_bytes = [int](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "request_body_limit_bytes" -DefaultValue 10485760)
+  request_body_limit_bytes = [int](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "request_body_limit_bytes" -DefaultValue 104857600)
   endpoints = @($mergedEndpoints)
   reasoning_equals = Normalize-IntArray -Values (Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "reasoning_equals") -Default @(516, 1034, 1552)
   intercept_streaming = [bool](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "intercept_streaming" -DefaultValue $true)
@@ -88,6 +88,10 @@ $gatewayConfig = [ordered]@{
   stream_action = if ([string]::IsNullOrWhiteSpace([string](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "stream_action"))) { "strict_502" } else { [string](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "stream_action") }
   log_match = [bool](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "log_match" -DefaultValue $true)
   health_path = if ([string]::IsNullOrWhiteSpace([string](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "health_path"))) { "/__codex_retry_gateway/health" } else { [string](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "health_path") }
+}
+
+if ($gatewayConfig.request_body_limit_bytes -le 0 -or $gatewayConfig.request_body_limit_bytes -eq 10485760) {
+  $gatewayConfig.request_body_limit_bytes = 104857600
 }
 
 $previousConfigContent = Get-Content -LiteralPath $CodexConfigPath -Raw

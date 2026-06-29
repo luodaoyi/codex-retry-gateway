@@ -80,6 +80,17 @@ if (-not $canReuseExistingInstall) {
     if ($null -eq $existingGatewayConfig.PSObject.Properties["guard_retry_attempts"]) {
       $existingGatewayConfig | Add-Member -NotePropertyName "guard_retry_attempts" -NotePropertyValue 3
     }
+    if (
+      $null -eq $existingGatewayConfig.PSObject.Properties["request_body_limit_bytes"] -or
+      [int]$existingGatewayConfig.request_body_limit_bytes -le 0 -or
+      [int]$existingGatewayConfig.request_body_limit_bytes -eq 10485760
+    ) {
+      if ($null -eq $existingGatewayConfig.PSObject.Properties["request_body_limit_bytes"]) {
+        $existingGatewayConfig | Add-Member -NotePropertyName "request_body_limit_bytes" -NotePropertyValue 104857600
+      } else {
+        $existingGatewayConfig.request_body_limit_bytes = 104857600
+      }
+    }
     if ((-not [bool]$existingGatewayConfig.intercept_streaming) -and (-not [bool]$existingGatewayConfig.intercept_non_streaming)) {
       $existingGatewayConfig.intercept_streaming = $true
       $existingGatewayConfig.intercept_non_streaming = $true

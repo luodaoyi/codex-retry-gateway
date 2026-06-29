@@ -291,7 +291,8 @@ bash ./scripts/start-gateway.sh --restart-if-running
 需要注意：
 
 - 严格流式拦截模式会先缓存上游 SSE，再决定透传、内部重试或返回 `502`；并发流式请求多、响应很大时，内存占用会增加。
-- 请求体会按 `request_body_limit_bytes` 先读入内存，默认限制是 `10MB`。
+- 请求体会按 `request_body_limit_bytes` 先读入内存，默认限制是 `100MB`。
+- 超过 `request_body_limit_bytes` 的请求会被本地 gateway 直接拒绝，并返回 `413 request_body_limit_exceeded`；这类情况不是上游故障。
 - 当前 `log_entries` 是本次启动以来的内存累计；长时间高频运行会增加内存占用。
 - 如果要把它放到公网或很高 QPS 场景，建议前面加成熟反向代理，并补日志轮转、内存日志上限、压测和进程守护。
 

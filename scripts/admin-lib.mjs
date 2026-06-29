@@ -11,6 +11,8 @@ export const DEFAULT_CODEX_CONFIG_PATH = path.join(os.homedir(), ".codex", "conf
 export const DEFAULT_LISTEN_HOST = "127.0.0.1";
 export const DEFAULT_LISTEN_PORT = 4610;
 export const DEFAULT_HEALTH_PATH = "/__codex_retry_gateway/health";
+export const DEFAULT_REQUEST_BODY_LIMIT_BYTES = 100 * 1024 * 1024;
+export const LEGACY_REQUEST_BODY_LIMIT_BYTES = 10 * 1024 * 1024;
 
 function escapeRegExp(value) {
   return `${value}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -78,6 +80,12 @@ export function getGatewayBaseUrlFromConfig(gatewayConfig) {
 
 export async function ensureDirectory(targetPath) {
   await mkdir(targetPath, { recursive: true });
+}
+
+export function normalizeRequestBodyLimitBytes(value, fallback = DEFAULT_REQUEST_BODY_LIMIT_BYTES) {
+  const parsed = Number.parseInt(`${value}`, 10);
+  const normalized = Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+  return normalized === LEGACY_REQUEST_BODY_LIMIT_BYTES ? DEFAULT_REQUEST_BODY_LIMIT_BYTES : normalized;
 }
 
 export async function writeUtf8File(targetPath, content) {
@@ -419,10 +427,7 @@ export async function installForCurrentProvider({
     listen_host: listenHost,
     listen_port: listenPort,
     upstream_base_url: originalBaseUrl,
-    request_body_limit_bytes:
-      existingGatewayConfig?.request_body_limit_bytes === undefined || existingGatewayConfig?.request_body_limit_bytes === null
-        ? 10485760
-        : Number.parseInt(`${existingGatewayConfig.request_body_limit_bytes}`, 10),
+    request_body_limit_bytes: normalizeRequestBodyLimitBytes(existingGatewayConfig?.request_body_limit_bytes),
     endpoints: mergedEndpoints,
     reasoning_equals: normalizeIntArray(existingGatewayConfig?.reasoning_equals, [516, 1034, 1552]),
     intercept_streaming:
@@ -587,6 +592,9 @@ export async function launchUi({
       if (existingGatewayConfig.guard_retry_attempts === undefined || existingGatewayConfig.guard_retry_attempts === null) {
         existingGatewayConfig.guard_retry_attempts = 3;
       }
+      existingGatewayConfig.request_body_limit_bytes = normalizeRequestBodyLimitBytes(
+        existingGatewayConfig.request_body_limit_bytes,
+      );
       if (!existingGatewayConfig.intercept_streaming && !existingGatewayConfig.intercept_non_streaming) {
         existingGatewayConfig.intercept_streaming = true;
         existingGatewayConfig.intercept_non_streaming = true;

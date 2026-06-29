@@ -668,6 +668,35 @@
      - `node --check .\gateway.mjs`
      - `git diff --check`
 
+34. 请求体超过本地上限时不应误记成 gateway 内部错误
+   - 现象：
+     - 日志出现：
+       - `[error] Error: 请求体超过限制: 104857600 bytes`
+     - 用户容易误判成 gateway 自身崩溃或上游异常
+   - 根因：
+     - `readRequestBody()` 超限时直接抛普通 `Error`
+     - 顶层统一 catch 会把它按通用 `502 gateway_error` 和 `[error]` 堆栈收口
+   - 处理：
+     - 为请求体超限增加单独错误语义：
+       - HTTP `413`
+       - `type=gateway_rejection`
+       - `code=request_body_limit_exceeded`
+     - 日志改为摘要：
+       - `[gateway-reject] request body too large path=... limit=... message=...`
+     - 继续计入 `failed_proxy_request_count`
+   - 额外修正：
+     - 原默认 `request_body_limit_bytes = 10MB` 会挡住真实 Codex 大上下文请求
+     - 默认值上调到 `100MB`
+     - 安装脚本和复用迁移会把旧默认 `10MB` 自动升级到新默认
+   - 验证：
+     - `node .\scripts\test-gateway-e2e.mjs`
+       - 新增“超限请求体应返回 413”断言
+       - 新增“超限请求体应返回 request_body_limit_exceeded”断言
+       - 新增“超限请求体应记录为 gateway-reject 摘要日志”断言
+       - 新增“不应记录 [error] Error: 请求体超过限制”断言
+     - `node --check .\gateway.mjs`
+     - `git diff --check`
+
 ### 2026-06-26 实测证据
 
 - 假上游 E2E

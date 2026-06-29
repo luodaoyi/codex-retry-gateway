@@ -169,6 +169,10 @@ async function run() {
       "Gateway config did not preserve original upstream_base_url",
     );
     assert(
+      gatewayConfig.request_body_limit_bytes === 100 * 1024 * 1024,
+      "Gateway config default request_body_limit_bytes should be 100MB",
+    );
+    assert(
       JSON.stringify(gatewayConfig.reasoning_equals) === JSON.stringify([516, 1034, 1552]),
       "Gateway config default reasoning_equals did not include 516,1034,1552",
     );
@@ -182,6 +186,7 @@ async function run() {
     const legacyGatewayConfig = {
       ...gatewayConfig,
       listen_port: legacyGatewayPort,
+      request_body_limit_bytes: 10 * 1024 * 1024,
     };
     delete legacyGatewayConfig.intercept_streaming;
     delete legacyGatewayConfig.intercept_non_streaming;
@@ -214,6 +219,10 @@ async function run() {
       reinstalledGatewayConfig.guard_retry_attempts === 3,
       "Install script did not migrate missing guard_retry_attempts",
     );
+    assert(
+      reinstalledGatewayConfig.request_body_limit_bytes === 100 * 1024 * 1024,
+      "Install script did not migrate legacy 10MB request_body_limit_bytes",
+    );
     await runPowerShellScript(restoreScript, [
       "-CodexConfigPath",
       legacyCodexConfigPath,
@@ -223,6 +232,7 @@ async function run() {
     delete gatewayConfig.intercept_streaming;
     delete gatewayConfig.intercept_non_streaming;
     delete gatewayConfig.guard_retry_attempts;
+    gatewayConfig.request_body_limit_bytes = 10 * 1024 * 1024;
     await writeFile(
       path.join(stateRoot, "config", "config.json"),
       `${JSON.stringify(gatewayConfig, null, 2)}\n`,
@@ -251,6 +261,10 @@ async function run() {
     assert(
       migratedGatewayConfig.guard_retry_attempts === 3,
       "Launch UI reuse did not migrate missing guard_retry_attempts",
+    );
+    assert(
+      migratedGatewayConfig.request_body_limit_bytes === 100 * 1024 * 1024,
+      "Launch UI reuse did not migrate legacy 10MB request_body_limit_bytes",
     );
     assert(Array.isArray(gatewayConfig.endpoints), "Gateway config endpoints must be an array");
     assert(
@@ -300,6 +314,10 @@ async function run() {
     assert(
       statusPayload.config?.intercept_non_streaming === true,
       "Status API did not expose intercept_non_streaming default",
+    );
+    assert(
+      statusPayload.config?.request_body_limit_bytes === 100 * 1024 * 1024,
+      "Status API did not expose upgraded request_body_limit_bytes default",
     );
     assert(statusPayload.config?.guard_retry_attempts === 3, "Status API did not expose guard_retry_attempts default");
     assert(statusPayload.state?.original_base_url === `http://127.0.0.1:${upstreamPort}`, "Status API did not expose install state");

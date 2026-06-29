@@ -17,12 +17,14 @@ const LOGS_API_PATH = `${ADMIN_BASE_PATH}/api/logs`;
 const PROBE_RUN_API_PATH = `${ADMIN_BASE_PATH}/api/probe/run`;
 const RESTORE_API_PATH = `${ADMIN_BASE_PATH}/api/restore`;
 const FAVICON_PATH = "/favicon.ico";
+const DEFAULT_REQUEST_BODY_LIMIT_BYTES = 100 * 1024 * 1024;
+const LEGACY_REQUEST_BODY_LIMIT_BYTES = 10 * 1024 * 1024;
 
 const DEFAULT_CONFIG = {
   listen_host: "127.0.0.1",
   listen_port: 4610,
   upstream_base_url: "",
-  request_body_limit_bytes: 10 * 1024 * 1024,
+  request_body_limit_bytes: DEFAULT_REQUEST_BODY_LIMIT_BYTES,
   endpoints: ["/responses", "/chat/completions", "/v1/responses", "/v1/chat/completions"],
   reasoning_equals: [516, 1034, 1552],
   intercept_streaming: true,
@@ -74,6 +76,7 @@ const REASONING_POINTERS = [
 const TRACKED_LOCAL_MODEL_FAMILIES = new Set(["gpt-5.4", "gpt-5.5"]);
 const SUSPICIOUS_SAMPLE_LIMIT = 50;
 const SUSPICIOUS_SAMPLE_EVIDENCE_LIMIT = 6;
+const LOG_ENTRY_LIMIT = 2000;
 const LONG_CONTEXT_PROBE_FILLER_UNIT = " a";
 const LONG_CONTEXT_PROBE_SEED_UNIT_COUNT = 8192;
 const LONG_CONTEXT_PROBE_TOKEN_TOLERANCE = 1024;
@@ -649,6 +652,14 @@ function normalizePositiveInteger(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function normalizeRequestBodyLimitBytes(value, fallback = DEFAULT_REQUEST_BODY_LIMIT_BYTES) {
+  const normalized = normalizePositiveInteger(value, fallback);
+  if (normalized === LEGACY_REQUEST_BODY_LIMIT_BYTES) {
+    return DEFAULT_REQUEST_BODY_LIMIT_BYTES;
+  }
+  return normalized;
+}
+
 function normalizeGuardRetryAttempts(value) {
   const text = `${value ?? ""}`.trim();
   if (text === "") {
@@ -903,6 +914,9 @@ function createMonitorRecorder(monitor) {
     };
     monitor.next_log_seq += 1;
     monitor.log_entries.push(entry);
+    if (monitor.log_entries.length > LOG_ENTRY_LIMIT) {
+      monitor.log_entries.splice(0, monitor.log_entries.length - LOG_ENTRY_LIMIT);
+    }
     return entry;
   };
 }
@@ -1418,6 +1432,10 @@ async function loadConfig(configPath) {
   const content = await readFile(configPath, "utf8");
   const loaded = JSON.parse(content);
   const config = { ...DEFAULT_CONFIG, ...loaded };
+  config.request_body_limit_bytes = normalizeRequestBodyLimitBytes(
+    loaded.request_body_limit_bytes,
+    DEFAULT_CONFIG.request_body_limit_bytes,
+  );
   config.endpoints = normalizeStringList(config.endpoints, DEFAULT_CONFIG.endpoints).map(normalizePath);
   config.reasoning_equals = normalizeIntegerList(
     config.reasoning_equals,
@@ -4385,13 +4403,22 @@ function copyHeadersToClient(sourceHeaders, target) {
   }
 }
 
+function createRequestBodyLimitExceededError(limitBytes) {
+  const error = new Error(`请求体超过限制: ${limitBytes} bytes`);
+  error.code = "request_body_limit_exceeded";
+  error.statusCode = 413;
+  error.errorType = "gateway_rejection";
+  error.logCategory = "gateway-reject";
+  return error;
+}
+
 async function readRequestBody(req, limitBytes) {
   const chunks = [];
   let total = 0;
   for await (const chunk of req) {
     total += chunk.length;
     if (total > limitBytes) {
-      throw new Error(`请求体超过限制: ${limitBytes} bytes`);
+      throw createRequestBodyLimitExceededError(limitBytes);
     }
     chunks.push(chunk);
   }
@@ -4843,19 +4870,32 @@ async function main() {
         runtime.monitor.failed_proxy_request_count += 1;
       }
       const upstreamFetchFailure = isRetryableUpstreamFetchError(error);
+      const requestBodyLimitExceeded = error?.code === "request_body_limit_exceeded";
       if (upstreamFetchFailure) {
         logUpstreamFetchFailure(logger, req, error);
+      } else if (requestBodyLimitExceeded) {
+        const path = typeof req?.url === "string"
+          ? normalizePath(new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`).pathname)
+          : "(unknown)";
+        logger(
+          `[gateway-reject] request body too large path=${path} limit=${runtime.config.request_body_limit_bytes} message=${error?.message || error}`,
+        );
       } else {
         logger(`[error] ${error?.stack || error}`);
       }
       if (!res.headersSent) {
-        res.writeHead(502, { "content-type": "application/json; charset=utf-8" });
+        const statusCode = upstreamFetchFailure
+          ? 502
+          : Number.isInteger(error?.statusCode)
+            ? error.statusCode
+            : 502;
+        res.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
         res.end(
           JSON.stringify({
             error: {
               message: upstreamFetchFailure ? "upstream fetch failed" : `${error?.message || error}`,
-              type: upstreamFetchFailure ? "upstream_error" : "codex_retry_gateway_error",
-              code: upstreamFetchFailure ? "upstream_fetch_failed" : "gateway_error",
+              type: upstreamFetchFailure ? "upstream_error" : error?.errorType || "codex_retry_gateway_error",
+              code: upstreamFetchFailure ? "upstream_fetch_failed" : error?.code || "gateway_error",
             },
           }),
         );

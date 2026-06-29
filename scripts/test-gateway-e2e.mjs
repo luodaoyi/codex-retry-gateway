@@ -1576,8 +1576,11 @@ async function run() {
   const gatewayPort = await getFreePort();
   const probeGatewayPort = await getFreePort();
   const warningProbeGatewayPort = await getFreePort();
+  const limitGatewayPort = await getFreePort();
   const configPath = path.join(tempRoot, "config.json");
   const logPath = path.join(tempRoot, "gateway.log");
+  const limitConfigPath = path.join(tempRoot, "limit-config.json");
+  const limitLogPath = path.join(tempRoot, "limit-gateway.log");
   const probeConfigDir = path.join(tempRoot, "probe-runtime");
   const probeConfigPath = path.join(probeConfigDir, "config.json");
   const probeLogPath = path.join(tempRoot, "probe-gateway.log");
@@ -1604,14 +1607,22 @@ async function run() {
   };
 
   await writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+  const limitConfig = {
+    ...config,
+    listen_port: limitGatewayPort,
+    request_body_limit_bytes: 1024,
+  };
+  await writeFile(limitConfigPath, JSON.stringify(limitConfig, null, 2), "utf8");
 
   const upstream = await startFakeUpstream(upstreamPort);
   const gateway = startGateway(configPath, logPath);
+  const limitGateway = startGateway(limitConfigPath, limitLogPath);
   let probeGateway = null;
   let warningProbeGateway = null;
 
   try {
     await waitForHealth(`http://127.0.0.1:${gatewayPort}${config.health_path}`);
+    await waitForHealth(`http://127.0.0.1:${limitGatewayPort}${config.health_path}`);
 
     const modelsResponse = await fetch(`http://127.0.0.1:${gatewayPort}/v1/models`);
     assert(modelsResponse.status === 200, `/v1/models 透传状态异常: ${modelsResponse.status}`);
@@ -1744,6 +1755,45 @@ async function run() {
     assert(
       !brokenBypassLogText.includes("[error] TypeError: fetch failed"),
       "上游 fetch failed 不应记录为 gateway 内部 error 堆栈",
+    );
+    const oversizedPayloadResponse = await fetch(`http://127.0.0.1:${limitGatewayPort}/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: Buffer.alloc(2048, 65),
+    });
+    const oversizedPayloadBody = await oversizedPayloadResponse.json();
+    assert(
+      oversizedPayloadResponse.status === 413,
+      `超限请求体应返回 413，实际为 ${oversizedPayloadResponse.status}`,
+    );
+    assert(
+      oversizedPayloadBody?.error?.type === "gateway_rejection",
+      "超限请求体应返回本地拒绝类型",
+    );
+    assert(
+      oversizedPayloadBody?.error?.code === "request_body_limit_exceeded",
+      "超限请求体应返回单独错误码",
+    );
+    assert(
+      `${oversizedPayloadBody?.error?.message || ""}`.includes("请求体超过限制"),
+      "超限请求体应返回明确错误信息",
+    );
+    const statusAfterOversizedPayload = await fetch(
+      `http://127.0.0.1:${limitGatewayPort}/__codex_retry_gateway/api/status`,
+    ).then((response) => response.json());
+    assert(
+      statusAfterOversizedPayload.metrics.failed_proxy_request_count === 1,
+      "超限请求体应计入 failed_proxy_request_count",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const oversizedPayloadLogText = await readFile(limitLogPath, "utf8");
+    assert(
+      oversizedPayloadLogText.includes("[gateway-reject] request body too large path=/responses"),
+      "超限请求体应记录为 gateway-reject 摘要日志",
+    );
+    assert(
+      !oversizedPayloadLogText.includes("[error] Error: 请求体超过限制"),
+      "超限请求体不应记录为 gateway 内部 error 堆栈",
     );
     const slowRequestPromise = fetch(`http://127.0.0.1:${gatewayPort}/responses`, {
       method: "POST",
@@ -3121,6 +3171,7 @@ async function run() {
     process.stdout.write("PASS codex-retry-gateway e2e\n");
   } finally {
     gateway.child.kill();
+    limitGateway.child.kill();
     if (probeGateway) {
       probeGateway.child.kill();
     }
