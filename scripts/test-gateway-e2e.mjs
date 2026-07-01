@@ -3171,8 +3171,10 @@ async function run() {
         uiHtml.includes('id="interceptRuleModeFinalOnlyInput"') &&
         uiHtml.includes('value="final_answer_only_high_xhigh"') &&
         uiHtml.includes("final answer only") &&
-        uiHtml.includes("仅 high / xhigh 模式使用"),
-      "管理页缺少 reasoning_tokens/final answer only 二选一拦截模式",
+        uiHtml.includes("reasoning_tokens 长度（推荐）") &&
+        uiHtml.includes("final answer only（实验）") &&
+        uiHtml.includes("不建议替代 516 主拦截"),
+      "管理页缺少 reasoning_tokens 推荐主规则与 final answer only 实验规则提示",
     );
     assert(
       uiHtml.includes('class="field rule-mode-field"') &&
@@ -3181,6 +3183,31 @@ async function run() {
         uiHtml.includes('width: 16px;') &&
         uiHtml.includes('font-size: 12px;'),
       "拦截规则模式 radio 应使用紧凑样式，避免按钮和字体过大",
+    );
+    assert(
+      (uiHtml.match(/class="inline-toggle rule-mode-toggle"/g) || []).length >= 4 &&
+        uiHtml.includes('.rule-mode-toggle input[type="checkbox"]'),
+      "拦截目标 checkbox 应复用紧凑选项样式，尺寸需与拦截规则模式一致",
+    );
+    assert(
+      (uiHtml.match(/class="field compact-config-field"/g) || []).length >= 3 &&
+        uiHtml.includes(".compact-config-field input") &&
+        uiHtml.includes("min-height: 38px;") &&
+        uiHtml.includes("font-size: 13px;"),
+      "non_stream_status_code 与网关内重试次数输入框应使用紧凑配置样式",
+    );
+    assert(
+      uiHtml.includes('id="endpointsInput"') &&
+        uiHtml.includes(".compact-config-field textarea") &&
+        uiHtml.includes("min-height: 104px;") &&
+        uiHtml.includes("font-weight: 600;"),
+      "endpoints 多行输入框应使用紧凑配置样式，避免组件和字体过大",
+    );
+    assert(
+      (uiHtml.match(/class="inline-toggle rule-mode-toggle"/g) || []).length >= 6 &&
+        uiHtml.indexOf('name="retry_upstream_capacity_errors"') > -1 &&
+        uiHtml.indexOf('name="log_match"') > -1,
+      "capacity 与 log_match 开关应复用紧凑选项样式",
     );
     assert(
       uiHtml.includes('id="interceptModeValue"'),
@@ -4176,6 +4203,27 @@ async function run() {
       compactionFinalOnlyNullResponse.status === 200,
       `remote_compaction_v2 reasoning_tokens=null 不应被 final only 模式拦截: ${compactionFinalOnlyNullResponse.status}`,
     );
+    const compactionFinalOnlyLowResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-codex-beta-features": "remote_compaction_v2",
+        },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          reasoning: { effort: "low" },
+          input: [{ role: "user", content: "compact the current conversation" }],
+          test_reasoning_tokens: 18,
+          test_include_final_answer_only: true,
+        }),
+      },
+    );
+    assert(
+      compactionFinalOnlyLowResponse.status === 200,
+      `remote_compaction_v2 reasoning_tokens=18 不应被 final only 模式拦截: ${compactionFinalOnlyLowResponse.status}`,
+    );
     const compactionAnalytics = await fetch(
       `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/analytics/reasoning`,
     ).then((response) => response.json());
@@ -4188,7 +4236,8 @@ async function run() {
     );
     assert(
       compactionSamples.some((sample) => sample.reasoning_tokens === 0) &&
-        compactionSamples.some((sample) => sample.reasoning_tokens === null),
+        compactionSamples.some((sample) => sample.reasoning_tokens === null) &&
+        compactionSamples.some((sample) => sample.reasoning_tokens === 18),
       `context_compaction 样本应覆盖 reasoning_tokens=0/null: ${JSON.stringify(compactionSamples)}`,
     );
     assert(
@@ -4201,6 +4250,15 @@ async function run() {
           sample.intercept_exempt_reason === "context_compaction",
       ),
       `context_compaction 样本不应计入拦截命中或实际拦截: ${JSON.stringify(compactionSamples)}`,
+    );
+    const compactionExemptPattern = (compactionAnalytics.candidate_patterns || []).find(
+      (entry) =>
+        entry.pattern_key ===
+        "reasoning=18|final_answer_only|commentary_not_observed",
+    );
+    assert(
+      compactionExemptPattern?.status === "context_compaction_exempt",
+      `上下文压缩豁免候选组合应明确标记 context_compaction_exempt: ${JSON.stringify(compactionExemptPattern)}`,
     );
     const finalOnlyHighStreamResponse = await fetch(
       `http://127.0.0.1:${gatewayPort}/responses`,
@@ -5077,11 +5135,11 @@ async function run() {
       "gpt-5.4 家族 rebuild_suspected_count 统计不正确",
     );
     assert(
-      familyBreakdown["gpt-5.5"]?.consistency?.total_checked === 15,
+      familyBreakdown["gpt-5.5"]?.consistency?.total_checked === 16,
       `gpt-5.5 家族 total_checked 统计不正确: ${familyBreakdown["gpt-5.5"]?.consistency?.total_checked}`,
     );
     assert(
-      familyBreakdown["gpt-5.5"]?.consistency?.matched === 14,
+      familyBreakdown["gpt-5.5"]?.consistency?.matched === 15,
       "gpt-5.5 家族 matched 统计不正确",
     );
     assert(
@@ -5093,7 +5151,7 @@ async function run() {
       "gpt-5.5 家族 unknown 统计不正确",
     );
     assert(
-      Math.abs(familyBreakdown["gpt-5.5"]?.consistency?.match_ratio - 14 / 15) <
+      Math.abs(familyBreakdown["gpt-5.5"]?.consistency?.match_ratio - 15 / 16) <
         1e-9,
       "gpt-5.5 家族声明一致率统计不正确",
     );

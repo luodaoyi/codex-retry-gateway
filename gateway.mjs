@@ -1696,6 +1696,27 @@ function buildOutputTpsBuckets(samples) {
   return buckets.map(({ label, count }) => ({ label, count }));
 }
 
+function summarizeCandidatePatternStatus(samples) {
+  const entries = Array.isArray(samples) ? samples : [];
+  if (entries.some((sample) => sample?.blocked_by_gateway)) {
+    return "blocked";
+  }
+  if (entries.some((sample) => sample?.matched_current_rule)) {
+    return "matched_current_rule";
+  }
+  if (
+    entries.length > 0 &&
+    entries.every(
+      (sample) =>
+        sample?.request_kind === REQUEST_KIND_CONTEXT_COMPACTION ||
+        sample?.intercept_exempt_reason === REQUEST_KIND_CONTEXT_COMPACTION,
+    )
+  ) {
+    return "context_compaction_exempt";
+  }
+  return "observe_only";
+}
+
 function summarizeGroupedSamples(groupEntries, totalCount) {
   const entries = [...groupEntries.entries()].map(([key, samples]) => {
     const count = samples.length;
@@ -1904,7 +1925,7 @@ function buildReasoningBehaviorSnapshotFromSamples(samples, options = {}) {
         .map((sample) => sample.ts)
         .sort()
         .slice(-1)[0] || null,
-      status: "observe_only",
+      status: summarizeCandidatePatternStatus(patternSamples),
     }))
     .sort((left, right) => {
       if (right.count !== left.count) {
@@ -5661,6 +5682,33 @@ function buildManagementHtml() {
         gap: 6px;
       }
 
+      .compact-config-field {
+        gap: 6px;
+      }
+
+      .compact-config-field label {
+        font-size: 12px;
+        line-height: 1.25;
+      }
+
+      .compact-config-field input {
+        min-height: 38px;
+        padding: 8px 12px;
+        border-radius: 14px;
+        font-size: 13px;
+        line-height: 1.25;
+        font-weight: 700;
+      }
+
+      .compact-config-field textarea {
+        min-height: 104px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        font-size: 13px;
+        line-height: 1.35;
+        font-weight: 600;
+      }
+
       .rule-mode-toggle {
         min-height: 34px;
         padding: 7px 10px;
@@ -5668,7 +5716,8 @@ function buildManagementHtml() {
         gap: 8px;
       }
 
-      .rule-mode-toggle input[type="radio"] {
+      .rule-mode-toggle input[type="radio"],
+      .rule-mode-toggle input[type="checkbox"] {
         width: 16px;
         height: 16px;
         margin: 0;
@@ -6429,13 +6478,13 @@ function buildManagementHtml() {
                 <label>拦截规则模式</label>
                 <div class="inline-toggle rule-mode-toggle">
                   <input id="interceptRuleModeReasoningTokensInput" name="intercept_rule_mode" type="radio" value="reasoning_tokens" />
-                  <label for="interceptRuleModeReasoningTokensInput">reasoning_tokens 长度</label>
+                  <label for="interceptRuleModeReasoningTokensInput">reasoning_tokens 长度（推荐）</label>
                 </div>
                 <div class="inline-toggle rule-mode-toggle">
                   <input id="interceptRuleModeFinalOnlyInput" name="intercept_rule_mode" type="radio" value="final_answer_only_high_xhigh" />
-                  <label for="interceptRuleModeFinalOnlyInput">final answer only</label>
+                  <label for="interceptRuleModeFinalOnlyInput">final answer only（实验）</label>
                 </div>
-                <div class="hint">二选一；final answer only 仅 high / xhigh 模式使用，不满足 high / xhigh 时只观察不拦截。</div>
+                <div class="hint">推荐使用 reasoning_tokens；final answer only 仅作实验收窄规则，可能漏掉仍影响正确性的 516 样本，不建议替代 516 主拦截。</div>
               </div>
 
               <div class="field">
@@ -6444,43 +6493,43 @@ function buildManagementHtml() {
                 <div class="hint">多个值用英文逗号或空格分隔。</div>
               </div>
 
-              <div class="field">
+              <div class="field rule-mode-field">
                 <label>拦截目标</label>
-                <div class="inline-toggle">
+                <div class="inline-toggle rule-mode-toggle">
                   <input id="interceptStreamingInput" name="intercept_streaming" type="checkbox" />
                   <label for="interceptStreamingInput">拦截流式</label>
                 </div>
-                <div class="inline-toggle">
+                <div class="inline-toggle rule-mode-toggle">
                   <input id="interceptNonStreamingInput" name="intercept_non_streaming" type="checkbox" />
                   <label for="interceptNonStreamingInput">拦截非流式</label>
                 </div>
                 <div class="hint">当前模式：<strong id="interceptModeValue">流式+非流式</strong></div>
               </div>
 
-              <div class="field">
+              <div class="field compact-config-field">
                 <label for="endpointsInput">endpoints</label>
                 <textarea id="endpointsInput" name="endpoints" placeholder="/responses"></textarea>
                 <div class="hint">每行一个路径。默认建议同时保留 root 与 /v1 两套路径。</div>
               </div>
 
-              <div class="field">
+              <div class="field compact-config-field">
                 <label for="statusCodeInput">non_stream_status_code</label>
                 <input id="statusCodeInput" name="non_stream_status_code" type="number" min="100" max="599" />
               </div>
 
-              <div class="field">
+              <div class="field compact-config-field">
                 <label for="guardRetryAttemptsInput">网关内重试次数</label>
                 <input id="guardRetryAttemptsInput" name="guard_retry_attempts" type="number" min="0" step="1" required />
                 <div class="hint">命中拦截规则、或开启下方 capacity 选项后命中上游 capacity 错误时生效；0 表示不做网关内重试。</div>
               </div>
 
-              <div class="inline-toggle">
+              <div class="inline-toggle rule-mode-toggle">
                 <input id="retryUpstreamCapacityErrorsInput" name="retry_upstream_capacity_errors" type="checkbox" />
                 <label for="retryUpstreamCapacityErrorsInput">上游 capacity 错误内重试</label>
               </div>
               <div class="hint">仅匹配 “Selected model is at capacity. Please try a different model.”，普通 429 / 502 仍按原样透传。</div>
 
-              <div class="inline-toggle">
+              <div class="inline-toggle rule-mode-toggle">
                 <input id="logMatchInput" name="log_match" type="checkbox" />
                 <label for="logMatchInput">log_match 命中时写日志</label>
               </div>
