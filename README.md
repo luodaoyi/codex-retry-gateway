@@ -15,6 +15,8 @@ TG群：[https://t.me/AI_INPUT_IM](https://t.me/AI_INPUT_IM)
 - 只把 `config.toml` 的当前 provider `base_url` 改成本地网关
 - 非流式命中默认集合 `reasoning_tokens = 516 / 1034 / 1552` 时，默认先在网关内部重试，超过上限后才返回 `502`
 - 流式命中时默认先缓存并判断；一旦命中默认集合 `516 / 1034 / 1552`，默认先在网关内部重试，超过上限后才统一返回 `502`
+- 拦截规则支持二选一：默认 `reasoning_tokens` 长度模式；也可切到 `final_answer_only_high_xhigh`，仅在 `high` / `xhigh` 思考等级下按 final answer only 结构拦截
+- Codex `remote_compaction_v2` 上下文压缩请求会标记为 `request_kind=context_compaction`，不触发当前拦截规则，但仍完整进入 reasoning analytics
 - 默认同时拦截 root 路径和 `/v1` 路径：
   - `/responses`
   - `/chat/completions`
@@ -184,7 +186,15 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
   - 违约次数
   - transport error 次数
   - 最近主动探针样本与日志证据
+- 看历史导入分析
+  - 先做字段预检，展示 `analysis_value`、`conclusion` 和 `field_coverage`
+  - 缺少核心 reasoning 行为字段时标记 `no_analysis_value`，不把纯历史聚合误当成特征证据
+  - 后台聚合 CC Switch SQLite 历史请求
+  - 后台聚合 Codex SQLite 日志关键词、等级和 target
+  - 文件级索引 Codex session JSONL 大文件
+  - 展示导入进度、数据源、请求量、token、延迟、日志行数和 session 体积
 - 改 `reasoning_equals`
+- 改拦截规则模式：`reasoning_tokens` 或 `final_answer_only_high_xhigh`
 - 改流式 / 非流式拦截目标
 - 改 `endpoints`
 - 改 `non_stream_status_code`
@@ -193,6 +203,13 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
 - 动态查看当前 gateway 的实时日志
 - 一键恢复 Codex 原设置
 
+Issue #9 收口说明：
+
+- 已增加 reasoning 行为统计大盘，包含 `reasoning_tokens` 高频排行，用于识别高频 reason token 作为候选特征值。
+- 高频排行不是自动定性结论，只作为候选观察入口；后续判断仍应结合模型家族、`reasoning.effort`、final answer only、commentary observed、耗时 / TPS / token 规模归一化偏差一起看。
+- 已补上下文压缩保护：`x-codex-beta-features=remote_compaction_v2` 的请求即使出现 `reasoning_tokens=0/null + final answer only`，也只观察和落盘，不做拦截，避免压缩上下文失败。
+- PR 合并后可关闭 GitHub Issue #9：`https://github.com/nonononull/codex-retry-gateway/issues/9`。
+
 说明：
 
 - 页面保存配置后会立即热生效，不需要重启 gateway
@@ -200,12 +217,13 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
 - 日常恢复优先用 UI；`restore-codex-config.ps1` 作为脚本级应急回滚入口保留
 - UI 恢复不会再额外拉起恢复子进程，而是由当前 gateway 直接完成恢复并退出
 - 统计口径默认按“本次 gateway 启动以来”累计
-- 当前规则命中总数表示命中 `reasoning_equals` 的次数，不等于实际拦截次数
+- 当前规则命中总数表示命中当前拦截规则的次数，不等于实际拦截次数；默认规则是 `reasoning_equals`，切到 `final_answer_only_high_xhigh` 后则按 high/xhigh 的 final answer only 结构计数
 - 实际拦截占比 = 实际拦截总数 / 被检查响应总数
 - 关闭某一类拦截后，该类命中仍会继续计入规则命中与模型一致性观测，但不会计入实际拦截
 - `guard_retry_attempts` 只对命中当前拦截规则且会被实际拦截的响应生效；上游真实 `429` / `502` 等 HTTP 错误如果没有命中规则，会继续原样透传
 - 网关内部规则重试的每次上游尝试都会计入代理请求总数；每次拿到并检查的响应都会计入被检查响应总数；命中会计入当前规则命中总数，被吞掉重试或最终拦截会计入实际拦截总数
 - 命中日志里的 `action=internal_retry remaining=N` 表示本次命中只在网关内部吞掉并继续重试，没有把失败状态返回给 Codex；`action=return_status_502` 才表示已经达到重试上限或配置为 `0`，本次会对 Codex 返回拦截状态
+- `context_compaction` 样本会保留在大盘和导出里，字段包含 `request_kind` / `intercept_exempt_reason`，但不会计入当前规则命中或实际拦截
 - 模型家族一致性面板里的“上游模型”是上游自报
 - “声明一致”不等于已证明真实运行一致
 - “400K 家族异常”只表示行为上疑似不符合 `1M` 家族
@@ -215,6 +233,74 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
 - 主动探针当前只做“声明契约证伪”，不做真实底层模型归因
 - 长上下文与 `gpt-5.5` 图片输入属于硬契约探针，可产出 `violation`
 - 响应结构、身份一致性、训练截止日期 / 知识表现属于辅助探针，默认只产出 `warning`
+
+## reasoning 行为统计后续路线
+
+代码层已经完成第一阶段：全量采集、按日落盘、时间段大盘、JSON / CSV 导出、候选特征组合展示。
+同时已补历史导入分析第一版：它独立于实时 reasoning analytics，只做后台聚合摘要，不把本地大库完整灌入实时日文件。
+
+运行态注意：
+
+- 如果本机 `127.0.0.1:4610` 还是旧 gateway 进程，新接口不会自动生效。
+- 重新拉起或重启 gateway 后，才会开始写入 `%USERPROFILE%\.codex-retry-gateway\analytics\reasoning-behavior-YYYY-MM-DD.json`。
+- 验证 `GET /__codex_retry_gateway/api/analytics/reasoning` 应返回 JSON；如果返回上游 HTML，说明当前运行实例没有加载 analytics 代码。
+- 未经确认不要直接动正在承载 Codex 会话的路由进程。
+
+后续不要把当前 `516` 全拦策略直接当成最终结论。`516` 只是高价值观察点，不等于“已确认降智”。真正要继续收敛的是这组组合特征：
+
+```text
+reasoning_tokens 异常值 + final_answer only + commentary_not_observed + 时序归一化偏差
+```
+
+海量数据分析口径：
+
+- `gateway analytics` 是后续逐请求、逐重试、逐拦截的主事实源。
+- `CC Switch` 日志和 `Codex session` 历史日志只做历史回填、字段探索和交叉校验。
+- 实时特征分析通过 `/__codex_retry_gateway/api/analytics/reasoning/analyze` 读取 runtime analytics，并按统一 Profile `516_candidate_review_v1` 返回 `analysis_value`、`conclusion`、`field_coverage`、候选摘要和基线对比。
+- 历史导入分析通过 `/__codex_retry_gateway/api/analytics/imports/run` 创建后台任务，通过 `/jobs/<job_id>` 轮询进度，通过 `/latest` 读取最近结果，通过 `/analyze` 对指定或最近 job 输出同口径分析结果。
+- 历史导入第一版只聚合 CC Switch SQLite、Codex logs SQLite 和 Codex sessions JSONL 文件级索引；不会读取完整 prompt、完整 answer、Authorization 或 Cookie。
+- 历史导入先跑 preflight；没有 `reasoning_tokens`、`final_answer_only`、`commentary_observed` 等核心字段时，结果为 `no_analysis_value`，可以保留摘要但不进入候选特征确认。
+- 大盘优先看 rollup 聚合，明细只在时间段、模型、思考等级或候选特征下钻时读取。
+- 面对 20GB 级 Codex session 历史日志，不做单进程全量 JSON 深解析；先用 `rg` / SQLite schema / key 扫描定位字段，再抽代表文件深解析。
+- 导出默认按时间段输出 JSON / CSV；数据继续变大后必须走 rollup 优先、分页/分片、压缩包和每日索引，不让 UI 无边界深解析。
+- 同步导出建议限制在 `31` 天以内；超过后创建后台导出任务，页面显示进度条和提醒，完成后再提供下载链接。
+- 请求预览、失败摘要、响应摘要都必须截断和脱敏；CSV 默认只放结构字段、数值字段和状态字段。
+
+516 分析口径：
+
+- `普通观察 516`：命中 `reasoning_tokens=516`，但未同时满足候选复盘组合。
+- `候选复盘 516`：`reasoning_tokens=516 + final_answer only + commentary_not_observed + 时序归一化偏差高`。
+- `普通观察 516` 不等于确认正常，`候选复盘 516` 也不等于确认降智；两者都只是不同优先级的观察队列。
+- UI 必须标注“516 只是观察点，不代表降智结论”，候选组合只能显示为“仅观察 / 候选复盘”。
+
+后续优先级：
+
+1. 继续扩充观测大盘，不改现有路由和拦截语义。
+   - 补“普通观察 516 / 候选复盘 516”对比视图。
+   - 补按 `gpt-5.4` / `gpt-5.5`、`reasoning.effort`、token 规模分层后的时序对比。
+   - 补时序归一化偏差分布图，不把耗时、TPS、token 长度拆成单独判据。
+2. 优化时序归一化算法。
+   - 当前 `time_normalization_deviation` 只是第一版固定 baseline。
+   - 后续应按模型家族、思考等级、输入/输出 token 规模建立动态基线。
+   - 网络延迟、上游排队、首 token 延迟要单独保留，不要混成一个“耗时短”结论。
+3. 增强导出与离线分析。
+   - CSV 可以继续扩列，补更完整的流式时序、结构计数、模型声明、重试链路字段。
+   - 后台导出任务已经支持按日期慢慢导出；后续再补每日 rollup、明细索引和压缩包导出，不急着引入数据库。
+4. 做 observe-only 特征规则。
+   - 先只标记候选，不进入拦截。
+   - 规则形态可以从 `reasoning_tokens_outlier + final_answer_only + commentary_not_observed + time_normalization_deviation` 开始。
+   - UI 要明确显示“仅观察”，避免误以为已经自动拦截。
+5. 人工确认后再做特征拦截。
+   - 只有当样本足够、误伤可解释、普通观察 516 和候选复盘 516 能稳定区分后，才考虑把 observe-only 规则升级为 intercept。
+   - 现有 `reasoning_equals` 自定义拦截仍保留；`final_answer_only_high_xhigh` 作为可切换新模式，效果不好可以直接回退默认模式。
+
+暂时不做：
+
+- 不做自动“降智”判定。
+- 不用单个 `reasoning_tokens` 值直接定性。
+- 不用单独耗时阈值拦截。
+- 不保存完整 prompt、完整 answer 或 Authorization。
+- 不把主动探针样本混进真实代理请求统计。
 
 ## 如何调整拦截条件
 
@@ -229,12 +315,18 @@ macOS / Linux: ~/.codex-retry-gateway/config/config.json
 
 - `reasoning_equals`
   - 默认 `[516, 1034, 1552]`
+- `intercept_rule_mode`
+  - 默认 `reasoning_tokens`
+  - `reasoning_tokens`：旧模式，命中 `reasoning_equals` 即视为当前规则命中
+  - `final_answer_only_high_xhigh`：新模式，仅当 `reasoning.effort` 为 `high` / `xhigh`，且响应结构是 `final answer only`、未观察到 commentary、无 tool call、无 reasoning item 时命中
+  - 两个模式二选一；如果新模式效果不好，可以回退 `reasoning_tokens`
+  - `request_kind=context_compaction` 的上下文压缩请求不参与上述拦截命中，只做观察和落盘
 - `intercept_streaming`
   - 默认 `true`
-  - 控制流式响应命中 `reasoning_equals` 后是否真正拦截
+  - 控制流式响应命中当前拦截规则后是否真正拦截
 - `intercept_non_streaming`
   - 默认 `true`
-  - 控制非流式响应命中 `reasoning_equals` 后是否真正拦截
+  - 控制非流式响应命中当前拦截规则后是否真正拦截
   - `intercept_streaming` 与 `intercept_non_streaming` 不能同时为 `false`
 - `endpoints`
   - 默认包含 root 与 `/v1` 两套路径
@@ -247,7 +339,7 @@ macOS / Linux: ~/.codex-retry-gateway/config/config.json
   - 无上限，管理页保存后立即生效
 - `stream_action`
   - 默认 `strict_502`
-  - `strict_502`：先缓存整个流，命中 `reasoning_equals` 里的值时统一返回 `502`
+  - `strict_502`：先缓存整个流，命中当前拦截规则时统一返回 `502`
   - `disconnect`：兼容旧行为；若命中发生在已透传 chunk 之后，则直接断开连接
 - `log_match`
   - 是否记录命中日志

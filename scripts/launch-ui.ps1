@@ -71,6 +71,11 @@ if (-not $canReuseExistingInstall) {
     if ([string]::IsNullOrWhiteSpace([string]$existingGatewayConfig.health_path)) {
       $existingGatewayConfig.health_path = "/__codex_retry_gateway/health"
     }
+    if ($null -eq $existingGatewayConfig.PSObject.Properties["intercept_rule_mode"]) {
+      $existingGatewayConfig | Add-Member -NotePropertyName "intercept_rule_mode" -NotePropertyValue "reasoning_tokens"
+    } elseif ([string]$existingGatewayConfig.intercept_rule_mode -ne "final_answer_only_high_xhigh") {
+      $existingGatewayConfig.intercept_rule_mode = "reasoning_tokens"
+    }
     if ($null -eq $existingGatewayConfig.PSObject.Properties["intercept_streaming"]) {
       $existingGatewayConfig | Add-Member -NotePropertyName "intercept_streaming" -NotePropertyValue $true
     }

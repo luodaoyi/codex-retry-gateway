@@ -13,9 +13,18 @@ export const DEFAULT_LISTEN_PORT = 4610;
 export const DEFAULT_HEALTH_PATH = "/__codex_retry_gateway/health";
 export const DEFAULT_REQUEST_BODY_LIMIT_BYTES = 100 * 1024 * 1024;
 export const LEGACY_REQUEST_BODY_LIMIT_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_INTERCEPT_RULE_MODE = "reasoning_tokens";
+export const FINAL_ONLY_HIGH_XHIGH_INTERCEPT_RULE_MODE = "final_answer_only_high_xhigh";
 
 function escapeRegExp(value) {
   return `${value}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeInterceptRuleMode(value) {
+  const normalized = `${value || ""}`.trim().toLowerCase();
+  return normalized === FINAL_ONLY_HIGH_XHIGH_INTERCEPT_RULE_MODE
+    ? FINAL_ONLY_HIGH_XHIGH_INTERCEPT_RULE_MODE
+    : DEFAULT_INTERCEPT_RULE_MODE;
 }
 
 export function parseOptions(argv, { booleanFlags = [] } = {}) {
@@ -429,6 +438,7 @@ export async function installForCurrentProvider({
     upstream_base_url: originalBaseUrl,
     request_body_limit_bytes: normalizeRequestBodyLimitBytes(existingGatewayConfig?.request_body_limit_bytes),
     endpoints: mergedEndpoints,
+    intercept_rule_mode: normalizeInterceptRuleMode(existingGatewayConfig?.intercept_rule_mode),
     reasoning_equals: normalizeIntArray(existingGatewayConfig?.reasoning_equals, [516, 1034, 1552]),
     intercept_streaming:
       existingGatewayConfig?.intercept_streaming === undefined ? true : Boolean(existingGatewayConfig.intercept_streaming),
@@ -583,6 +593,9 @@ export async function launchUi({
       if (!existingGatewayConfig.health_path) {
         existingGatewayConfig.health_path = DEFAULT_HEALTH_PATH;
       }
+      existingGatewayConfig.intercept_rule_mode = normalizeInterceptRuleMode(
+        existingGatewayConfig.intercept_rule_mode,
+      );
       if (existingGatewayConfig.intercept_streaming === undefined) {
         existingGatewayConfig.intercept_streaming = true;
       }

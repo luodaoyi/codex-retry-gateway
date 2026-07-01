@@ -84,8 +84,58 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
 - 查看当前接管状态
 - 查看本次启动以来的实时日志
 - 查看当前规则命中总数、实际拦截总数与实际拦截占比
-- 热更新 `reasoning_equals` / `endpoints` / `non_stream_status_code` / `guard_retry_attempts` / `log_match`
+- 查看 reasoning 行为统计大盘、高频 token 排行、候选特征组合与最近样本
+- 查看 reasoning 统计里的按模型家族、按思考等级、按模型家族+思考等级分桶
+- 按统一 Profile 运行 reasoning 特征分析，展示 `analysis_value`、`conclusion`、字段覆盖率、候选摘要和基线对比
+- 导出 reasoning 行为统计 JSON / CSV
+- 启动历史导入预检并分析后台任务，先判断历史数据是否具备 reasoning 行为特征分析价值
+- 热更新 `intercept_rule_mode` / `reasoning_equals` / `endpoints` / `non_stream_status_code` / `guard_retry_attempts` / `log_match`
 - 一键恢复 Codex 原设置并关闭 gateway
+
+拦截规则模式说明：
+
+- `reasoning_tokens` 是默认旧模式，命中 `reasoning_equals` 即视为当前规则命中，可作为稳定回退方案。
+- `final_answer_only_high_xhigh` 是新模式，仅在 `reasoning.effort=high/xhigh` 下拦截 `final answer only + commentary not observed + no tool call + no reasoning item` 的响应结构。
+- 两个模式二选一；`intercept_streaming` / `intercept_non_streaming` 只控制命中当前规则后是否真正拦截。
+- `x-codex-beta-features=remote_compaction_v2` 会识别为 `request_kind=context_compaction`；这类上下文压缩请求只采集和观察，不触发当前拦截规则，避免 `reasoning_tokens=0/null` 导致压缩失败。
+
+reasoning 统计落盘说明：
+
+- 代码层已实现 reasoning analytics，但当前正在运行的旧 gateway 进程不一定已经加载新代码。
+- 如果 `GET /__codex_retry_gateway/api/analytics/reasoning` 返回上游 HTML 或非 JSON，说明需要在合适窗口重启或重新拉起 gateway 后再验证。
+- 不要在正在承载重要 Codex 会话时贸然重启路由进程；先确认可以中断再操作。
+- 每次请求都会尽量记录详细样本，不只记录最终透传成功的请求。
+- 已覆盖：
+  - 正常透传样本
+  - 命中规则但仅观察样本
+  - 最终被 gateway 拦截样本
+  - gateway 内部重试样本
+  - 未纳入检查但被旁路透传的请求样本
+  - Codex `remote_compaction_v2` 上下文压缩样本
+  - 上游 `fetch failed` 失败样本
+  - 本地请求体超限拒绝样本
+- 单样本会尽量保留：
+  - 请求模型、模型家族、`reasoning.effort`
+  - 请求类型 `request_kind`、拦截豁免原因 `intercept_exempt_reason`
+  - 本地期望模型 / 上游声明模型 / 流式声明模型 / 最终响应模型
+  - 请求摘要、请求体大小、请求体哈希、截断后的部分请求预览
+  - token、耗时、TPS、响应结构特征
+  - 命中规则、是否拦截、最终动作、上游状态、客户端状态
+  - 截断后的失败摘要或响应摘要
+- 导出脱敏要求：
+  - 不导出 Authorization、Cookie、Set-Cookie、完整请求体、完整响应体。
+  - 请求预览建议上限 `500` 字符。
+  - 失败摘要、响应摘要和错误消息建议上限 `320` 字符。
+  - CSV 优先导出结构字段、数值字段和状态字段。
+
+历史导入分析说明：
+
+- 历史导入独立于实时 reasoning analytics，不会把历史大文件完整写入 `reasoning-behavior-YYYY-MM-DD.json`。
+- 默认发现本机 `%USERPROFILE%\.cc-switch\cc-switch.db`、`%USERPROFILE%\.codex\sqlite\logs_2.sqlite`、`%USERPROFILE%\.codex\logs_2.sqlite` 和 `%USERPROFILE%\.codex\sessions`。
+- 如果请求体传入 `source_paths`，只分析指定路径，不混入默认真实大库，便于测试和分段导入。
+- 历史导入先执行 preflight；缺少 `reasoning_tokens`、`final_answer_only`、`commentary_observed` 等核心字段时，标记 `no_analysis_value` 并停止候选特征分析。
+- CC Switch / Codex logs SQLite 使用聚合 SQL；session JSONL 第一版只做文件级索引和 top 大文件，不深解析完整会话正文。
+- 输出摘要写入 `<state_root>\analytics\imports\<job_id>\summary.json`，UI 只轮询任务进度和摘要。
 
 并发与日志说明：
 
@@ -121,6 +171,130 @@ Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/
 ```powershell
 Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/ui'
 ```
+
+```powershell
+Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/api/analytics/reasoning'
+```
+
+成功标准：
+
+- HTTP 状态为 `200`。
+- 响应 `Content-Type` 是 JSON 或正文可解析为 JSON。
+- JSON 中包含 `ok: true`、`summary`、`top_reasoning_tokens`、`candidate_patterns`、`recent_samples`。
+- JSON 中包含 `schema_version: 2`、`analytics_ready: true`、`analytics_started_at`、`analytics_state_root` 这类机器可判定信号。
+- 如果返回 HTML，表示当前运行实例不是已加载 analytics 的新版 gateway。
+
+```powershell
+Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/api/analytics/reasoning/export?format=json'
+```
+
+成功标准：
+
+- HTTP 状态为 `200`。
+- JSON 中包含 `schema_version`、`exported_at`、`summary`、`samples`。
+- JSON 中包含 `analytics_ready: true`。
+- 不应包含完整 prompt、完整 answer 或 Authorization。
+- `31` 天以内保持同步导出；`32` 天及以上应返回 `202` 并创建后台导出任务。
+- 后台导出任务应按日期分段处理，UI 显示进度条和“可以继续正常使用 gateway”的提醒，完成后提供下载链接。
+
+```powershell
+Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/api/analytics/reasoning/export?format=csv'
+```
+
+成功标准：
+
+- HTTP 状态为 `200`。
+- CSV 表头至少包含 `sample_id`、`gateway_request_id`、`request_kind`、`intercept_exempt_reason`、`request_reasoning_effort`、`reasoning_tokens`、`duration_total_ms`、`output_tps`、`commentary_observed`、`client_http_status`。
+
+时间段观测示例：
+
+```powershell
+Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/api/analytics/reasoning?date_from=2026-06-29&date_to=2026-06-30'
+```
+
+```powershell
+Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/api/analytics/reasoning/export?format=json&date_from=2026-06-29&date_to=2026-06-30'
+```
+
+reasoning 特征分析示例：
+
+```powershell
+$body = @{
+  filters = @{
+    include_retries = $true
+    include_blocked = $true
+  }
+  conditions = @{
+    reasoning_tokens = @(516)
+    final_answer_only = $true
+    commentary_not_observed = $true
+    time_normalization_deviation = 'high'
+  }
+} | ConvertTo-Json -Depth 6
+Invoke-RestMethod -Method Post -ContentType 'application/json' -Body $body -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/api/analytics/reasoning/analyze'
+```
+
+成功标准：
+
+- HTTP 状态为 `200`。
+- JSON 中包含 `analysis_profile=516_candidate_review_v1`。
+- JSON 中包含 `analysis_value`、`conclusion`、`field_coverage`、`candidate_summary`、`baseline_comparison`。
+- 结论只表示候选复盘等级，不修改现有拦截规则。
+
+落盘文件检查：
+
+```powershell
+Get-ChildItem (Join-Path $env:USERPROFILE '.codex-retry-gateway\analytics') -Filter 'reasoning-behavior-*.json'
+```
+
+成功标准：
+
+- 重启并产生请求后，目录里出现 `reasoning-behavior-YYYY-MM-DD.json`。
+- 文件内 `schema_version` 为 `2`。
+- `samples` 中能看到模型、模型家族、`request_reasoning_effort`、token、耗时、TPS、状态、重试和拦截字段。
+
+反例验证口径：
+
+- 旧进程返回 HTML 或非 JSON 时，不能视为 analytics 已激活。
+- 缺少 `schema_version` 或 analytics ready 信号时，只能视为部分可用，不能视为完整激活。
+- 大时间段观测查询超过 `7` 天时，应返回 `degraded=true` 和 `degrade_reason=date_range_too_large`，不能全量深解析到卡死。
+- JSON / CSV 导出超过 `31` 天时，不应阻塞 UI 或代理主链路；应返回 `202`、`background_export=true` 和 `export_job.job_id`，由前端轮询任务进度并在完成后下载。
+
+后台导出任务检查示例：
+
+```powershell
+$job = Invoke-RestMethod -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/api/analytics/reasoning/export?format=json&date_from=2026-01-01&date_to=2026-03-15'
+$job.export_job
+Invoke-RestMethod -UseBasicParsing "http://127.0.0.1:4610/__codex_retry_gateway/api/analytics/reasoning/export/jobs/$($job.export_job.job_id)"
+```
+
+成功标准：
+
+- 创建请求返回 HTTP `202`。
+- `export_job.progress.total_days` 等于选择的本地日期天数。
+- `processed_days` 会随后台处理推进，完成后 `status=completed`。
+- 完成后 `download_url` 指向 `/api/analytics/reasoning/export/jobs/<job_id>/download`。
+- 导出期间普通代理请求不需要等待该任务完成。
+
+历史导入分析任务检查示例：
+
+```powershell
+$job = Invoke-RestMethod -Method Post -ContentType 'application/json' -Body '{}' -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/api/analytics/imports/run'
+$job.import_job
+Invoke-RestMethod -UseBasicParsing "http://127.0.0.1:4610/__codex_retry_gateway/api/analytics/imports/jobs/$($job.import_job.job_id)"
+Invoke-RestMethod -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/api/analytics/imports/latest'
+Invoke-RestMethod -Method Post -ContentType 'application/json' -Body (@{ job_id = $job.import_job.job_id } | ConvertTo-Json) -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/api/analytics/imports/analyze'
+```
+
+成功标准：
+
+- 创建请求返回 HTTP `202`。
+- `import_job.progress.total_sources` 表示本次发现或指定的数据源数。
+- 任务完成后 `status=completed`，`preflight.analysis_value` 为 `valuable`、`partial` 或 `no_analysis_value`。
+- `feature_analysis` 中包含 `analysis_profile`、`analysis_value`、`conclusion`、`field_coverage`、`candidate_summary` 和 `baseline_comparison`。
+- `no_analysis_value` 表示历史源缺核心字段，应放弃候选特征分析；此时可以保留轻量摘要，但不要求展示 CC Switch 模型深聚合。
+- `valuable` 或 `partial` 时，`summary` 中包含请求量、token、日志行数、session 文件数等摘要，且仍不读取完整 prompt、完整 answer、Authorization 或 Cookie。
+- 导入期间普通代理请求不需要等待该任务完成。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\launch-ui.ps1 -NoOpen

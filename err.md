@@ -1,5 +1,415 @@
 # err.md
 
+## 2026-07-02 final answer only 模式不能拦截 Codex 上下文压缩请求
+
+### 现象
+
+- `final_answer_only_high_xhigh` 模式下，Codex 压缩上下文时可能收到 `reasoning_tokens=0` 或缺失 usage 导致 `reasoning_tokens=null`。
+- 压缩响应结构可能接近 `final answer only + commentary not observed`。
+- 如果按普通 high/xhigh final answer only 响应拦截，会连续返回本地拦截状态，导致上下文压缩失败。
+
+### 根因
+
+- 旧规则只区分 `reasoning.effort` 和响应结构，没有区分“普通回答请求”和“Codex 上下文维护请求”。
+- 本机真实 analytics 样本显示 Codex 压缩链路带有请求头：
+  - `x-codex-beta-features: remote_compaction_v2`
+- 该请求头足以作为请求侧特征；不能把 `reasoning_tokens=0/null` 全局放行，否则会削弱 high/xhigh final answer only 的正常拦截价值。
+
+### 处理
+
+- 新增请求类型识别：
+  - `remote_compaction_v2` / `remote_compaction` / `context_compaction` -> `request_kind=context_compaction`
+- `context_compaction` 样本不参与当前拦截规则命中：
+  - 不计入 `matched_current_rule`
+  - 不计入 `blocked_by_gateway`
+  - 不触发 `guard_retry_attempts` 内部重试
+- 样本仍完整落盘和导出：
+  - `request_kind`
+  - `intercept_exempt_reason=context_compaction`
+  - `reasoning_tokens=0/null`
+  - `final_answer_only`
+
+### 验证
+
+- 红测：
+  - `node .\scripts\test-gateway-e2e.mjs`
+  - 先失败在 `remote_compaction_v2 reasoning_tokens=0 不应被 final only 模式拦截: 502`
+- 修复后：
+  - `node --check .\gateway.mjs`
+  - `node --check .\scripts\test-gateway-e2e.mjs`
+  - `node .\scripts\test-gateway-e2e.mjs`
+
+## 2026-07-01 新增 final answer only 规则样本后，模型家族精确统计需要同步
+
+### 现象
+
+- 为 `final_answer_only_high_xhigh` 增加高思考拦截用例后，`node .\scripts\test-gateway-e2e.mjs` 失败：
+  - `gpt-5.5 家族 total_checked 统计不正确`
+- 失败发生在 `model_insights.family_breakdown` 精确计数断言。
+
+### 根因
+
+- 新增的 high/xhigh final answer only 请求不仅验证拦截规则，也会进入既有模型一致性统计。
+- 这些请求的上游声明模型与请求模型一致，因此会同时增加 `total_checked` 与 `matched`。
+- 旧断言使用精确数值，不会自动吸收新增样本。
+
+### 处理
+
+- 保留精确断言，不改成宽松 `>=`。
+- 将 `gpt-5.5` 家族统计同步到新增样本后的真实口径：
+  - `total_checked = 13`
+  - `matched = 12`
+  - `match_ratio = 12 / 13`
+- 断言失败信息补充实际值，避免后续靠猜测调整。
+
+### 验证
+
+- `node .\scripts\test-gateway-e2e.mjs`
+
+## 2026-07-01 reasoning 特征分析新增 helper 时不要复用既有通用函数名
+
+### 现象
+
+- 为 `/api/analytics/reasoning/analyze` 增加分析 Profile 解析时，新增了一个本地 helper：
+  - `normalizeStringList`
+- `node --check .\gateway.mjs` 直接失败：
+  - `SyntaxError: Identifier 'normalizeStringList' has already been declared`
+
+### 根因
+
+- `gateway.mjs` 早已有全局 `normalizeStringList(values, fallback)`，用于配置归一化。
+- 新增分析模块又声明了同名函数，ESM 顶层作用域不允许重复声明。
+
+### 处理
+
+- 将分析模块私有 helper 改名为：
+  - `normalizeAnalysisStringList`
+- 所有分析 Profile 和过滤条件解析统一使用新名字，避免影响旧配置归一化逻辑。
+
+### 验证
+
+- `node --check .\gateway.mjs`
+- `node --check .\scripts\test-gateway-e2e.mjs`
+- `node .\scripts\test-gateway-e2e.mjs`
+
+## 2026-07-01 历史导入分析指定 source_paths 时不能再混入默认真实大库
+
+### 现象
+
+- 新增历史导入分析后，E2E 使用临时 SQLite 小库触发 `/api/analytics/imports/run`。
+- 任务进度停在 `processed_sources=2/4`，已经完成测试用 CC Switch 和 Codex logs 小库，但又继续扫描默认 `%USERPROFILE%\.codex\logs_2.sqlite` 等真实大库。
+- 这会让测试变慢，也会在用户只想分段导入时误扫 1GB / 2GB 级历史库。
+
+### 根因
+
+- `buildHistoricalImportSources()` 对每个数据源都使用“请求路径或默认路径”的写法。
+- 只要某个可选 alt 路径没传，就会自动补默认真实路径。
+- 这与“传入 `source_paths` 就只分析指定源”的分段导入语义冲突。
+
+### 处理
+
+- 增加 `hasRequestedSources = Object.keys(source_paths).length > 0`。
+- 当请求体传入任意 `source_paths` 时，只收集显式指定的数据源，不再混入默认真实大库。
+- 不传 `source_paths` 时，才自动发现本机默认 CC Switch、Codex logs 和 Codex sessions。
+
+### 验证
+
+- `node --check .\gateway.mjs`
+- `node --check .\scripts\test-gateway-e2e.mjs`
+- `node .\scripts\test-gateway-e2e.mjs`
+
+## 2026-07-01 reasoning 大范围导出不应 31 天硬拒绝，应后台分段导出
+
+### 现象
+
+- 第一版大范围保护把 `31` 天以上 JSON / CSV 导出做成 HTTP `413` 拒绝。
+- 用户明确要求大范围导出可以分段慢慢导出，要有进度条和提醒，但不能影响正常代理工作。
+- 如果继续用 `413`，后续 60 天、90 天复盘都要人工拆日期，容易漏数据，也不符合“大盘离线分析”的使用方式。
+
+### 根因
+
+- 之前只实现了“防止 UI 卡死”的保护，没有补后台任务通道。
+- 同步导出适合短时间段，但长时间段应该从交互请求里拆出去。
+
+### 处理
+
+- 保留 `31` 天以内同步 JSON / CSV 导出。
+- `32` 天及以上改为返回 HTTP `202`，并创建后台导出任务：
+  - 返回 `export_job.job_id`
+  - 返回 `progress.total_days / processed_days / percent`
+  - 后台按本地日期逐日读取 analytics 日文件和内存缓冲
+  - 每处理一天后让出事件循环，避免长循环占住代理主链路
+  - 完成后写入 `<state_root>/analytics/exports/<job_id>/reasoning-export.json|csv`
+  - 新增任务状态接口和下载接口
+- 管理页导出按钮改为先创建任务，再轮询进度；页面显示“可以继续正常使用 gateway”的提醒，完成后展示下载链接。
+
+### 验证
+
+- `node --check .\gateway.mjs`
+- `git diff --check`
+- `node .\scripts\test-gateway-e2e.mjs`
+
+### 边界
+
+- 后台任务状态当前保存在 gateway 进程内存中，进程重启后任务状态不会恢复。
+- 当前不引入数据库，不打 zip；后续再补每日 rollup、明细索引和压缩包导出。
+- 没有重启当前本机 `127.0.0.1:4610` 工作路由。
+
+## 2026-07-01 reasoning analytics 缺少机器可判定激活信号，且大范围查询可能无边界深解析
+
+### 现象
+
+- 补完 reasoning analytics 后，文档要求用硬信号判断新进程是否真正激活。
+- 但 E2E 新增断言后首先失败：
+  - `status reasoning_behavior 缺少 schema_version=2`
+- 这说明状态接口虽然返回了 `reasoning_behavior` 聚合数据，但缺少机器可判定字段。
+- 同时，`date_from/date_to` 时间段接口和导出接口会直接读取命中范围内的日文件；如果时间段很大，后续有被大量日文件拖慢的风险。
+
+### 根因
+
+- `buildReasoningBehaviorSnapshotFromSamples()` 只返回业务统计，没有返回 analytics schema 和 ready 状态。
+- `buildReasoningBehaviorRuntimeSnapshot()` 也没有追加运行期元信息，例如：
+  - `analytics_started_at`
+  - `analytics_state_root`
+  - 最近 flush 状态
+- 时间段查询和导出接口没有先计算日期跨度，也没有大范围降级或拒绝策略。
+
+### 处理
+
+- reasoning snapshot 统一补：
+  - `schema_version = 2`
+  - `analytics_ready = true`
+- runtime metadata 补：
+  - `analytics_started_at`
+  - `analytics_state_root`
+  - `analytics_last_flush_at`
+  - `analytics_last_flush_error`
+- 状态接口、独立观测接口、JSON 导出都带上这些硬信号。
+- 大范围观测查询增加软降级：
+  - 超过 `7` 天返回 `degraded=true`
+  - `degrade_reason=date_range_too_large`
+  - 不返回明细样本
+- 第一版大范围导出曾增加明确拒绝：
+  - 超过 `31` 天返回 HTTP `413`
+  - 错误码 `reasoning_export_range_too_large`
+  - 提示缩小范围或后续使用分片/压缩包导出
+- 后续已升级为后台分段导出任务；详见上一条 2026-07-01 记录。
+
+### 验证
+
+- 红测：
+  - `node .\scripts\test-gateway-e2e.mjs`
+  - 先失败在 `status reasoning_behavior 缺少 schema_version=2`
+- 修复后：
+  - `node --check .\gateway.mjs`
+  - `git diff --check`
+  - `node .\scripts\test-gateway-e2e.mjs`
+
+### 边界
+
+- 这次先实现硬信号和大盘查询降级边界。
+- 没有引入数据库。
+- 后台分段导出已在后续记录中补齐，但压缩包导出仍未实现。
+- 没有重启当前本机 `127.0.0.1:4610` 工作路由。
+
+## 2026-06-30 reasoning 行为统计 runtime 状态未初始化会让旁路请求直接 502
+
+### 现象
+
+- `node .\scripts\test-gateway-e2e.mjs` 最早失败在：
+  - `/v1/models 透传状态异常: 502`
+- `/v1/models` 不在 reasoning 检查 endpoints 内，理论上应该只是旁路透传。
+
+### 根因
+
+- 普通代理请求进入后会立即调用：
+  - `nextGatewayRequestId(runtime.reasoningBehavior)`
+- 但 `runtime` 初始化时没有挂 `reasoningBehavior: createReasoningBehaviorState()`
+- 旁路请求还没发到上游，就因为本地状态为空抛错，被顶层 catch 映射成 502。
+
+### 处理
+
+- 在运行时初始化对象中补齐：
+  - `reasoningBehavior: createReasoningBehaviorState()`
+- 这样所有普通代理请求进入时都能分配 `gateway_request_id`，旁路、检查、失败、重试都共享同一套采集状态。
+
+### 验证
+
+- `node --check .\gateway.mjs`
+- `node .\scripts\test-gateway-e2e.mjs`
+
+## 2026-06-30 inspected 主链 handler 如果不落样本，reasoning 大盘会只剩旁路和失败样本
+
+### 现象
+
+- UI 大盘补齐后，E2E 继续失败：
+  - `reasoning 行为样本总数不正确`
+- 状态接口里 `reasoning_behavior.summary.total_samples` 明显偏低，只看到旁路、拒绝或失败样本。
+
+### 根因
+
+- `proxyRequest()` 已经为每次 attempt 创建了 `reasoningSample` 和 `structureAccumulator`
+- 但 `handleNonStreaming()` / `handleStreaming()` 没有接收和使用这两个对象
+- handler 内部返回 `passed`、`observe_only`、`blocked`、`internal_retry` 时没有调用 `finalizeReasoningBehaviorSample()` 和 `recordReasoningBehaviorSample()`
+- 流式分支也没有记录首 chunk、首内容、最终 chunk、usage 与结构信号。
+
+### 处理
+
+- `handleNonStreaming()`：
+  - 补 usage、响应结构信号
+  - 按 `passed` / `observe_only` / `blocked` / `internal_retry` 落样本
+- `handleStreaming()`：
+  - 补 `first_stream_chunk_at`、`first_content_at`、`final_chunk_at`
+  - 累计 SSE payload 的 usage、模型信号和结构信号
+  - 按 `passed` / `observe_only` / `blocked` / `internal_retry` / `disconnect` / `upstream_stream_terminated` 落样本
+- `upstream_fetch_failed` 样本统一记录 `client_http_status = 502`
+- CSV 导出补充流式时序、结构信号、内部重试与 stream termination 字段。
+
+### 验证
+
+- `node --check .\gateway.mjs`
+- `node .\scripts\test-gateway-e2e.mjs`
+
+## 2026-06-29 reasoning 统计如果只记“有正常上游响应的请求”，后面很多关键字段会永远缺失
+
+### 现象
+
+- 用户新要求变成：
+  - 每一次请求都尽量详细
+  - 连当前被拦截的请求也要详细落盘
+  - 后续要区分 `gpt-5.4` / `gpt-5.5` 和 `reasoning.effort`
+- 旧实现虽然已经有 reasoning 样本，但主要还是围绕“已检查响应”展开：
+  - 正常透传和命中规则请求比较完整
+  - 但像旁路透传、上游 `fetch failed`、请求体超限这类请求，要么没进样本，要么字段很薄
+
+### 根因
+
+- reasoning 样本之前是围绕 `upstreamResponse` 和检查链路补的
+- 请求在这些更早的阶段失败时：
+  - 还没进入 `handleNonStreaming()` / `handleStreaming()`
+  - 甚至还没完成上游连接
+- 结果会导致“统计总数看起来不少，但关键失败请求没有事实样本”
+
+### 处理
+
+- 把 reasoning 样本入口前移到 `proxyRequest()`：
+  - 一开始就分配 `gateway_request_id`
+  - 一开始就创建请求摘要 accumulator
+- 落盘范围扩成：
+  - 正常透传
+  - observe_only
+  - blocked
+  - internal_retry
+  - bypassed
+  - upstream_fetch_failed
+  - request_rejected
+- 每条样本尽量保留：
+  - 请求 headers 脱敏副本
+  - 请求体大小 / sha256 / 摘要
+  - 请求结构摘要
+  - 上游状态 / 客户端状态
+  - 失败摘要 / 响应摘要
+  - `gpt-5.4` / `gpt-5.5` family
+  - `reasoning.effort`
+- 聚合新增：
+  - `by_model_family`
+  - `by_reasoning_effort`
+  - `by_model_family_and_effort`
+
+### 验证
+
+- `node .\scripts\test-gateway-e2e.mjs`
+  - reasoning analytics 状态接口新增 family / effort / family+effort 分桶断言
+  - reasoning JSON 导出新增请求摘要、失败摘要、客户端状态断言
+  - reasoning 日文件新增 `schema_version = 2` 和失败样本断言
+- `node .\scripts\test-install-restore.mjs`
+  - 安装/恢复回归继续通过
+
+## 2026-06-29 reasoning 统计新增模型/思考等级样本后，模型一致性旧断言需要同步调整
+
+### 现象
+
+- 为了让 reasoning analytics 真正产出 `gpt-5.4` / `gpt-5.5` 与 `reasoning.effort` 分桶
+- E2E 新增了几条带不同模型和 effort 的真实请求
+- 结果 `model_insights.family_breakdown` 的旧精确断言直接失败
+  - 例如 `gpt-5.4 total_checked` 从旧值涨到了新值
+
+### 根因
+
+- 这些新增请求不只是 reasoning analytics 的样本
+- 同时也会进入原有 `finalizeModelInsights()` 统计
+- 所以 `family_breakdown` 的精确计数必须跟着真实新增样本一起调整
+
+### 处理
+
+- 保留精确断言，不改成模糊的 `>=`
+- 先打印实际 `family_breakdown` 真值确认影响面
+- 再把 E2E 中这组旧计数同步更新到新口径
+
+### 验证
+
+- `node .\scripts\test-gateway-e2e.mjs` 通过
+
+## 2026-06-29 reasoning 行为统计导出不能只读日文件，必须合并内存缓冲样本
+
+### 现象
+
+- 新增 reasoning 行为统计后：
+  - 状态接口和管理页已经能看到最新样本
+  - 但 `GET /__codex_retry_gateway/api/analytics/reasoning/export?format=json` 导出的 `samples` 为空或显著偏少
+
+### 根因
+
+- 运行中样本先进入内存 recent window 和 daily buffer
+- 日文件写入是节流 flush，不保证每次请求后立刻落盘
+- 导出接口如果只读取 `analytics/reasoning-behavior-YYYY-MM-DD.json`，会漏掉尚未 flush 的最新样本
+
+### 处理
+
+- 导出读取逻辑改成：
+  - 先读日期范围内的日文件
+  - 再合并当前内存里的 `reasoning_behavior_daily_buffers`
+  - 最后统一排序并重新计算导出统计
+
+### 验证
+
+- `node .\scripts\test-gateway-e2e.mjs`
+  - 新增 reasoning JSON 导出包含样本断言
+  - 新增 reasoning CSV 导出包含表头断言
+
+## 2026-06-29 主动探针测试夹具必须与 stateRoot / auth 查找规则对齐
+
+### 现象
+
+- 新增 reasoning 行为统计后，主动探针相关 E2E 超时
+- 状态接口显示：
+  - `active_probe.total_runs = 1`
+  - 但 `recent_samples` 大量是 `401`
+  - `error_excerpt = missing_authorization | authorization header required`
+
+### 根因
+
+- 网关读取鉴权时会按两条路径查找：
+  - `path.dirname(codex_config_path)/auth.json`
+  - `runtime.paths.stateRoot/auth.json`
+- 不同测试场景的 `config.json` 布局不同：
+  - 有的是 `<root>/config/config.json`
+  - 有的是 `<root>/probe-runtime/config.json`
+- 测试夹具若把 `state.json` / `auth.json` 写到错误层级，主动探针就会稳定落到 `401 indeterminate`
+
+### 处理
+
+- 保持 `buildRuntimePaths()` 规则不变：
+  - 目录名为 `config` 时，`stateRoot = 上一级`
+  - 其他情况，`stateRoot = config.json 所在目录`
+- E2E 测试夹具按对应场景写入 `state.json` / `auth.json`
+- 对关键 probe 场景额外补一份 `auth.json` 到 `codex_config_path` 同目录，避免目录布局差异再次误伤
+
+### 验证
+
+- `node .\scripts\test-gateway-e2e.mjs`
+  - 主动探针长上下文 / warning / 缺鉴权场景全部恢复通过
+
 ## 2026-06-29 Issue #6：旧配置缺字段导致 PowerShell StrictMode 安装失败
 
 ### 现象

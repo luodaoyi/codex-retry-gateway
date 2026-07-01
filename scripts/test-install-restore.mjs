@@ -176,6 +176,10 @@ async function run() {
       JSON.stringify(gatewayConfig.reasoning_equals) === JSON.stringify([516, 1034, 1552]),
       "Gateway config default reasoning_equals did not include 516,1034,1552",
     );
+    assert(
+      gatewayConfig.intercept_rule_mode === "reasoning_tokens",
+      "Gateway config default intercept_rule_mode should be reasoning_tokens",
+    );
     assert(gatewayConfig.intercept_streaming === true, "Gateway config default intercept_streaming should be true");
     assert(
       gatewayConfig.intercept_non_streaming === true,
@@ -190,6 +194,7 @@ async function run() {
     };
     delete legacyGatewayConfig.intercept_streaming;
     delete legacyGatewayConfig.intercept_non_streaming;
+    delete legacyGatewayConfig.intercept_rule_mode;
     delete legacyGatewayConfig.guard_retry_attempts;
     await writeFile(
       path.join(legacyStateRoot, "config", "config.json"),
@@ -216,6 +221,10 @@ async function run() {
       "Install script did not migrate missing intercept_non_streaming",
     );
     assert(
+      reinstalledGatewayConfig.intercept_rule_mode === "reasoning_tokens",
+      "Install script did not migrate missing intercept_rule_mode",
+    );
+    assert(
       reinstalledGatewayConfig.guard_retry_attempts === 3,
       "Install script did not migrate missing guard_retry_attempts",
     );
@@ -231,6 +240,7 @@ async function run() {
     ]);
     delete gatewayConfig.intercept_streaming;
     delete gatewayConfig.intercept_non_streaming;
+    delete gatewayConfig.intercept_rule_mode;
     delete gatewayConfig.guard_retry_attempts;
     gatewayConfig.request_body_limit_bytes = 10 * 1024 * 1024;
     await writeFile(
@@ -257,6 +267,10 @@ async function run() {
     assert(
       migratedGatewayConfig.intercept_non_streaming === true,
       "Launch UI reuse did not migrate missing intercept_non_streaming",
+    );
+    assert(
+      migratedGatewayConfig.intercept_rule_mode === "reasoning_tokens",
+      "Launch UI reuse did not migrate missing intercept_rule_mode",
     );
     assert(
       migratedGatewayConfig.guard_retry_attempts === 3,
@@ -309,6 +323,10 @@ async function run() {
     assert(
       JSON.stringify(statusPayload.config?.reasoning_equals) === JSON.stringify([516, 1034, 1552]),
       "Status API did not expose default reasoning_equals",
+    );
+    assert(
+      statusPayload.config?.intercept_rule_mode === "reasoning_tokens",
+      "Status API did not expose intercept_rule_mode default",
     );
     assert(statusPayload.config?.intercept_streaming === true, "Status API did not expose intercept_streaming default");
     assert(
@@ -386,6 +404,7 @@ async function run() {
       body: JSON.stringify({
         reasoning_equals: [1024],
         endpoints: ["/responses", "/v1/responses"],
+        intercept_rule_mode: "final_answer_only_high_xhigh",
         intercept_streaming: true,
         intercept_non_streaming: false,
         non_stream_status_code: 503,
@@ -402,6 +421,10 @@ async function run() {
     assert(saveConfigResponse.status === 200, `Save config API failed: ${saveConfigResponse.status}`);
     assert(saveConfigPayload.config?.non_stream_status_code === 503, "Save config API did not return updated config");
     assert(saveConfigPayload.config?.guard_retry_attempts === 2, "Save config API did not return guard_retry_attempts");
+    assert(
+      saveConfigPayload.config?.intercept_rule_mode === "final_answer_only_high_xhigh",
+      "Save config API did not return intercept_rule_mode",
+    );
     assert(saveConfigPayload.config?.intercept_streaming === true, "Save config API did not return intercept_streaming");
     assert(
       saveConfigPayload.config?.intercept_non_streaming === false,
@@ -416,6 +439,10 @@ async function run() {
       "Saved config file did not persist reasoning_equals",
     );
     assert(updatedGatewayConfig.intercept_streaming === true, "Saved config file did not persist intercept_streaming");
+    assert(
+      updatedGatewayConfig.intercept_rule_mode === "final_answer_only_high_xhigh",
+      "Saved config file did not persist intercept_rule_mode",
+    );
     assert(
       updatedGatewayConfig.intercept_non_streaming === false,
       "Saved config file did not persist intercept_non_streaming",

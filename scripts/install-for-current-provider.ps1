@@ -80,6 +80,7 @@ $gatewayConfig = [ordered]@{
   upstream_base_url = $originalBaseUrl
   request_body_limit_bytes = [int](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "request_body_limit_bytes" -DefaultValue 104857600)
   endpoints = @($mergedEndpoints)
+  intercept_rule_mode = if ([string](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "intercept_rule_mode" -DefaultValue "reasoning_tokens") -eq "final_answer_only_high_xhigh") { "final_answer_only_high_xhigh" } else { "reasoning_tokens" }
   reasoning_equals = Normalize-IntArray -Values (Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "reasoning_equals") -Default @(516, 1034, 1552)
   intercept_streaming = [bool](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "intercept_streaming" -DefaultValue $true)
   intercept_non_streaming = [bool](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "intercept_non_streaming" -DefaultValue $true)

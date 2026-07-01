@@ -4,6 +4,7 @@
   "upstream_base_url": "https://api.openai.com",
   "request_body_limit_bytes": 104857600,
   "endpoints": ["/responses", "/chat/completions", "/v1/responses", "/v1/chat/completions"],
+  "intercept_rule_mode": "reasoning_tokens",
   "reasoning_equals": [516, 1034, 1552],
   "intercept_streaming": true,
   "intercept_non_streaming": true,
