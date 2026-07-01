@@ -15,7 +15,7 @@ TG群：[https://t.me/AI_INPUT_IM](https://t.me/AI_INPUT_IM)
 - 只把 `config.toml` 的当前 provider `base_url` 改成本地网关
 - 非流式命中默认集合 `reasoning_tokens = 516 / 1034 / 1552` 时，默认先在网关内部重试，超过上限后才返回 `502`
 - 流式命中时默认先缓存并判断；一旦命中默认集合 `516 / 1034 / 1552`，默认先在网关内部重试，超过上限后才统一返回 `502`
-- 拦截规则支持二选一：默认 `reasoning_tokens` 长度模式；也可切到 `final_answer_only_high_xhigh`，仅在 `high` / `xhigh` 思考等级下按 final answer only 结构拦截
+- 拦截规则支持二选一：默认并推荐 `reasoning_tokens` 长度模式；`final_answer_only_high_xhigh` 仅作为实验收窄规则，不建议替代默认 516/1034/1552 主拦截
 - Codex `remote_compaction_v2` 上下文压缩请求会标记为 `request_kind=context_compaction`，不触发当前拦截规则，但仍完整进入 reasoning analytics
 - 默认同时拦截 root 路径和 `/v1` 路径：
   - `/responses`
@@ -194,7 +194,7 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
   - 文件级索引 Codex session JSONL 大文件
   - 展示导入进度、数据源、请求量、token、延迟、日志行数和 session 体积
 - 改 `reasoning_equals`
-- 改拦截规则模式：`reasoning_tokens` 或 `final_answer_only_high_xhigh`
+- 改拦截规则模式：推荐 `reasoning_tokens`；`final_answer_only_high_xhigh` 仅用于短时实验和候选特征复盘
 - 改流式 / 非流式拦截目标
 - 改 `endpoints`
 - 改 `non_stream_status_code`
@@ -326,10 +326,10 @@ macOS / Linux: ~/.codex-retry-gateway/config/config.json
 - `reasoning_equals`
   - 默认 `[516, 1034, 1552]`
 - `intercept_rule_mode`
-  - 默认 `reasoning_tokens`
-  - `reasoning_tokens`：旧模式，命中 `reasoning_equals` 即视为当前规则命中
-  - `final_answer_only_high_xhigh`：新模式，仅当 `reasoning.effort` 为 `high` / `xhigh`，且响应结构是 `final answer only`、未观察到 commentary、无 tool call、无 reasoning item 时命中
-  - 两个模式二选一；如果新模式效果不好，可以回退 `reasoning_tokens`
+  - 默认并推荐 `reasoning_tokens`
+  - `reasoning_tokens`：稳定主规则，命中 `reasoning_equals` 即视为当前规则命中；真实使用中 516 拦截仍可能直接影响任务正确性
+  - `final_answer_only_high_xhigh`：实验收窄规则，仅当 `reasoning.effort` 为 `high` / `xhigh`，且响应结构是 `final answer only`、未观察到 commentary、无 tool call、无 reasoning item 时命中；它可能漏掉仍影响正确性的 516 样本，不建议替代默认 516/1034/1552 主拦截
+  - 两个模式二选一；效果不确定或以任务正确性优先时，使用 `reasoning_tokens`
   - `request_kind=context_compaction` 的上下文压缩请求不参与上述拦截命中，只做观察和落盘
 - `intercept_streaming`
   - 默认 `true`
