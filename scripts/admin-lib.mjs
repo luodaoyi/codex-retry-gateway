@@ -451,6 +451,7 @@ export async function installForCurrentProvider({
         ? 502
         : Number.parseInt(`${existingGatewayConfig.non_stream_status_code}`, 10),
     guard_retry_attempts: normalizeGuardRetryAttempts(existingGatewayConfig?.guard_retry_attempts, 3),
+    retry_upstream_capacity_errors: existingGatewayConfig?.retry_upstream_capacity_errors !== false,
     stream_action: existingGatewayConfig?.stream_action || "strict_502",
     log_match: existingGatewayConfig?.log_match === undefined ? true : Boolean(existingGatewayConfig.log_match),
     health_path: existingGatewayConfig?.health_path || DEFAULT_HEALTH_PATH,
@@ -604,6 +605,15 @@ export async function launchUi({
       }
       if (existingGatewayConfig.guard_retry_attempts === undefined || existingGatewayConfig.guard_retry_attempts === null) {
         existingGatewayConfig.guard_retry_attempts = 3;
+      }
+      if (
+        existingGatewayConfig.retry_upstream_capacity_errors === undefined ||
+        existingGatewayConfig.retry_upstream_capacity_errors === null
+      ) {
+        existingGatewayConfig.retry_upstream_capacity_errors = true;
+      } else {
+        existingGatewayConfig.retry_upstream_capacity_errors =
+          existingGatewayConfig.retry_upstream_capacity_errors !== false;
       }
       existingGatewayConfig.request_body_limit_bytes = normalizeRequestBodyLimitBytes(
         existingGatewayConfig.request_body_limit_bytes,

@@ -89,7 +89,7 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
 - 按统一 Profile 运行 reasoning 特征分析，展示 `analysis_value`、`conclusion`、字段覆盖率、候选摘要和基线对比
 - 导出 reasoning 行为统计 JSON / CSV
 - 启动历史导入预检并分析后台任务，先判断历史数据是否具备 reasoning 行为特征分析价值
-- 热更新 `intercept_rule_mode` / `reasoning_equals` / `endpoints` / `non_stream_status_code` / `guard_retry_attempts` / `log_match`
+- 热更新 `intercept_rule_mode` / `reasoning_equals` / `endpoints` / `non_stream_status_code` / `guard_retry_attempts` / `retry_upstream_capacity_errors` / `log_match`
 - 一键恢复 Codex 原设置并关闭 gateway
 
 拦截规则模式说明：
@@ -98,6 +98,7 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
 - `final_answer_only_high_xhigh` 是新模式，仅在 `reasoning.effort=high/xhigh` 下拦截 `final answer only + commentary not observed + no tool call + no reasoning item` 的响应结构。
 - 两个模式二选一；`intercept_streaming` / `intercept_non_streaming` 只控制命中当前规则后是否真正拦截。
 - `x-codex-beta-features=remote_compaction_v2` 会识别为 `request_kind=context_compaction`；这类上下文压缩请求只采集和观察，不触发当前拦截规则，避免 `reasoning_tokens=0/null` 导致压缩失败。
+- `retry_upstream_capacity_errors` 默认开启，只匹配上游 `Selected model is at capacity. Please try a different model.`；命中后按 `guard_retry_attempts` 在网关内部重试，普通 `429` / `502` 仍原样透传。
 
 reasoning 统计落盘说明：
 

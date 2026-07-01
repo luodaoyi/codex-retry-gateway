@@ -46,6 +46,8 @@ const CONTEXT_COMPACTION_MARKERS = [
   "remote_compaction",
   "context_compaction",
 ];
+const UPSTREAM_CAPACITY_ERROR_MESSAGE =
+  "Selected model is at capacity. Please try a different model.";
 const REASONING_ANALYSIS_CORE_FIELDS = [
   "reasoning_tokens",
   "final_answer_only",
@@ -74,6 +76,7 @@ const DEFAULT_CONFIG = {
   intercept_non_streaming: true,
   non_stream_status_code: 502,
   guard_retry_attempts: 3,
+  retry_upstream_capacity_errors: true,
   stream_action: "strict_502",
   log_match: true,
   health_path: "/__codex_retry_gateway/health",
@@ -1295,6 +1298,35 @@ function buildFailureSummary(error, responsePayload = null) {
     code: normalizeNonEmptyString(error?.code),
     message: truncateText(`${error?.message || error || ""}`),
   };
+}
+
+function responsePayloadIncludesText(payload, bodyBuffer, predicate) {
+  const parts = [];
+  if (payload) {
+    try {
+      parts.push(JSON.stringify(payload));
+    } catch {
+      // ignore circular or non-serializable test payloads
+    }
+  }
+  if (bodyBuffer?.length) {
+    parts.push(bodyBuffer.toString("utf8"));
+  }
+  return parts.some((part) => predicate(String(part).toLowerCase()));
+}
+
+function isUpstreamCapacityErrorResponse(upstreamResponse, parsedPayload, bodyBuffer) {
+  if (!upstreamResponse || upstreamResponse.status < 400) {
+    return false;
+  }
+  const exactMessage = UPSTREAM_CAPACITY_ERROR_MESSAGE.toLowerCase();
+  return responsePayloadIncludesText(parsedPayload, bodyBuffer, (text) =>
+    text.includes(exactMessage) ||
+    (
+      text.includes("selected model is at capacity") &&
+      text.includes("try a different model")
+    ),
+  );
 }
 
 function markReasoningSampleFirstChunk(sample, timestampMs = Date.now()) {
@@ -4085,6 +4117,7 @@ async function loadConfig(configPath) {
   config.intercept_streaming = config.intercept_streaming !== false;
   config.intercept_non_streaming = config.intercept_non_streaming !== false;
   config.guard_retry_attempts = normalizeGuardRetryAttempts(config.guard_retry_attempts);
+  config.retry_upstream_capacity_errors = config.retry_upstream_capacity_errors !== false;
   if (!config.intercept_streaming && !config.intercept_non_streaming) {
     throw new Error("流式与非流式至少选择一个拦截目标");
   }
@@ -5241,6 +5274,10 @@ function buildEditableConfig(currentConfig, payload) {
     payload.guard_retry_attempts === undefined
       ? currentConfig.guard_retry_attempts
       : normalizeGuardRetryAttempts(payload.guard_retry_attempts);
+  const nextRetryUpstreamCapacityErrors =
+    payload.retry_upstream_capacity_errors === undefined
+      ? currentConfig.retry_upstream_capacity_errors !== false
+      : Boolean(payload.retry_upstream_capacity_errors);
   const nextActiveProbe =
     payload.active_probe === undefined
       ? currentConfig.active_probe
@@ -5280,6 +5317,7 @@ function buildEditableConfig(currentConfig, payload) {
     intercept_non_streaming: nextInterceptNonStreaming,
     non_stream_status_code: nextStatusCode,
     guard_retry_attempts: nextGuardRetryAttempts,
+    retry_upstream_capacity_errors: nextRetryUpstreamCapacityErrors,
     log_match: payload.log_match === undefined ? currentConfig.log_match : Boolean(payload.log_match),
     active_probe: nextActiveProbe,
   };
@@ -6427,8 +6465,14 @@ function buildManagementHtml() {
               <div class="field">
                 <label for="guardRetryAttemptsInput">网关内重试次数</label>
                 <input id="guardRetryAttemptsInput" name="guard_retry_attempts" type="number" min="0" step="1" required />
-                <div class="hint">仅对命中拦截规则的响应生效；上游 429/502 等真实错误会直接透传。</div>
+                <div class="hint">命中拦截规则、或开启下方 capacity 选项后命中上游 capacity 错误时生效；0 表示不做网关内重试。</div>
               </div>
+
+              <div class="inline-toggle">
+                <input id="retryUpstreamCapacityErrorsInput" name="retry_upstream_capacity_errors" type="checkbox" />
+                <label for="retryUpstreamCapacityErrorsInput">上游 capacity 错误内重试</label>
+              </div>
+              <div class="hint">仅匹配 “Selected model is at capacity. Please try a different model.”，普通 429 / 502 仍按原样透传。</div>
 
               <div class="inline-toggle">
                 <input id="logMatchInput" name="log_match" type="checkbox" />
@@ -6971,6 +7015,7 @@ function buildManagementHtml() {
         endpointsInput: document.getElementById('endpointsInput'),
         statusCodeInput: document.getElementById('statusCodeInput'),
         guardRetryAttemptsInput: document.getElementById('guardRetryAttemptsInput'),
+        retryUpstreamCapacityErrorsInput: document.getElementById('retryUpstreamCapacityErrorsInput'),
         logMatchInput: document.getElementById('logMatchInput'),
         probeTargetFamily54Input: document.getElementById('probeTargetFamily54Input'),
         probeTargetFamily55Input: document.getElementById('probeTargetFamily55Input'),
@@ -7580,6 +7625,7 @@ function buildManagementHtml() {
         refs.endpointsInput.value = Array.isArray(config?.endpoints) ? config.endpoints.join('\\n') : '';
         refs.statusCodeInput.value = config?.non_stream_status_code ?? 502;
         refs.guardRetryAttemptsInput.value = String(config?.guard_retry_attempts ?? 3);
+        refs.retryUpstreamCapacityErrorsInput.checked = config?.retry_upstream_capacity_errors !== false;
         refs.logMatchInput.checked = Boolean(config?.log_match);
         const activeProbe = config?.active_probe || {};
         const targetFamilies = Array.isArray(activeProbe?.target_families) ? activeProbe.target_families : [];
@@ -8378,6 +8424,7 @@ function buildManagementHtml() {
               ...interceptPayload,
               non_stream_status_code: Number.parseInt(refs.statusCodeInput.value, 10),
               guard_retry_attempts: Number.parseInt(refs.guardRetryAttemptsInput.value, 10),
+              retry_upstream_capacity_errors: refs.retryUpstreamCapacityErrorsInput.checked,
               log_match: refs.logMatchInput.checked,
               active_probe: collectActiveProbeFormPayload(),
             }),
@@ -8970,7 +9017,7 @@ async function handleManagementRequest(runtime, req, res, requestUrl) {
         ? "final_answer_only_high_xhigh efforts=high,xhigh"
         : `reasoning_equals=${nextConfig.reasoning_equals.join(",")}`;
     runtime.logger(
-      `[config] updated intercept_rule_mode=${nextConfig.intercept_rule_mode} rule_target=${ruleTarget} endpoints=${nextConfig.endpoints.join(",")}`,
+      `[config] updated intercept_rule_mode=${nextConfig.intercept_rule_mode} rule_target=${ruleTarget} retry_upstream_capacity_errors=${nextConfig.retry_upstream_capacity_errors !== false} endpoints=${nextConfig.endpoints.join(",")}`,
     );
     const state = await readRuntimeState(runtime);
     jsonResponse(res, 200, {
@@ -9329,9 +9376,40 @@ async function handleNonStreaming({
   const reasoning = parsed ? extractReasoningTokens(parsed) : null;
   const ruleMatch = buildInterceptRuleMatch(config, reasoning, reasoningSample, structureAccumulator);
   const matched = ruleMatch.matched;
+  const capacityRetryMatched =
+    config.retry_upstream_capacity_errors !== false &&
+    isUpstreamCapacityErrorResponse(upstreamResponse, parsed, bodyBuffer);
 
   recordInspectedResponse(monitor, reasoning, matched, "non-stream");
   setRequestTrackingOutcome(requestTracking, "inspected");
+
+  if (capacityRetryMatched) {
+    const canGuardRetry = requestTracking?.guardRetryRemaining > 0;
+    if (config.log_match) {
+      const action = canGuardRetry
+        ? `internal_retry remaining=${requestTracking.guardRetryRemaining}`
+        : "pass_through";
+      logger(
+        `[upstream-capacity] non-stream path=${pathname} status=${upstreamResponse.status} action=${action}`,
+      );
+    }
+    if (canGuardRetry) {
+      recordBlockedResponse(monitor, "non-stream");
+      finalizeModelInsights(monitor, pathname, modelContext, parsed);
+      completeReasoningBehaviorSample({
+        runtime,
+        sample: reasoningSample,
+        structure: structureAccumulator,
+        modelContext,
+        finalAction: "upstream_capacity_internal_retry",
+        clientHttpStatus: null,
+        matchedCurrentRule: false,
+        blockedByGateway: true,
+        failureSummary: buildFailureSummary(null, parsed),
+      });
+      return { guardRetry: true, retryReason: "upstream_capacity" };
+    }
+  }
 
   if (matched) {
     const shouldIntercept = config.intercept_non_streaming !== false;
@@ -9811,8 +9889,10 @@ async function proxyRequest(runtime, req, res) {
       );
       reasoningSample.upstream_http_status = upstreamResponse.status;
 
+      const upstreamContentType = upstreamResponse.headers.get("content-type");
       const responseIsStream =
-        requestIsStream || isSseContentType(upstreamResponse.headers.get("content-type"));
+        isSseContentType(upstreamContentType) ||
+        (requestIsStream && !isJsonContentType(upstreamContentType));
 
       if (!shouldInspect) {
         const body = Buffer.from(await upstreamResponse.arrayBuffer());

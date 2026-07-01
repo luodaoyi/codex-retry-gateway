@@ -85,6 +85,11 @@ if (-not $canReuseExistingInstall) {
     if ($null -eq $existingGatewayConfig.PSObject.Properties["guard_retry_attempts"]) {
       $existingGatewayConfig | Add-Member -NotePropertyName "guard_retry_attempts" -NotePropertyValue 3
     }
+    if ($null -eq $existingGatewayConfig.PSObject.Properties["retry_upstream_capacity_errors"]) {
+      $existingGatewayConfig | Add-Member -NotePropertyName "retry_upstream_capacity_errors" -NotePropertyValue $true
+    } else {
+      $existingGatewayConfig.retry_upstream_capacity_errors = [bool]$existingGatewayConfig.retry_upstream_capacity_errors
+    }
     if (
       $null -eq $existingGatewayConfig.PSObject.Properties["request_body_limit_bytes"] -or
       [int]$existingGatewayConfig.request_body_limit_bytes -le 0 -or

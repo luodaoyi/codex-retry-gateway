@@ -422,6 +422,7 @@ async function verifyRenderedUiEvidenceDetailsBehavior(uiHtml) {
     "endpointsInput",
     "statusCodeInput",
     "guardRetryAttemptsInput",
+    "retryUpstreamCapacityErrorsInput",
     "logMatchInput",
     "probeTargetFamily54Input",
     "probeTargetFamily55Input",
@@ -532,6 +533,7 @@ async function verifyRenderedUiEvidenceDetailsBehavior(uiHtml) {
   );
   elements.statusCodeInput.value = "502";
   elements.guardRetryAttemptsInput.value = "3";
+  elements.retryUpstreamCapacityErrorsInput.checked = true;
   elements.reasoningAnalysisTokenInput.value = "516";
   elements.reasoningAnalysisModelFamilyInput.value = "gpt-5.4,gpt-5.5";
   elements.reasoningAnalysisEffortInput.value = "high,medium";
@@ -552,6 +554,7 @@ async function verifyRenderedUiEvidenceDetailsBehavior(uiHtml) {
       endpoints: ["/responses"],
       non_stream_status_code: 502,
       guard_retry_attempts: 3,
+      retry_upstream_capacity_errors: true,
       log_match: true,
       active_probe: {
         enabled: true,
@@ -1396,6 +1399,10 @@ async function verifyRenderedUiEvidenceDetailsBehavior(uiHtml) {
     "管理页未回填网关内重试次数",
   );
   assert(
+    elements.retryUpstreamCapacityErrorsInput.checked === true,
+    "管理页未回填上游 capacity 错误内重试开关",
+  );
+  assert(
     elements.interceptModeValue.textContent.includes("流式+非流式"),
     "管理页未显示双开拦截模式",
   );
@@ -1971,6 +1978,10 @@ async function verifyRenderedUiEvidenceDetailsBehavior(uiHtml) {
     savedPayload.guard_retry_attempts === 3,
     "saveConfig 未提交 guard_retry_attempts",
   );
+  assert(
+    savedPayload.retry_upstream_capacity_errors === true,
+    "saveConfig 未提交 retry_upstream_capacity_errors",
+  );
   assert(savedPayload.active_probe, "saveConfig 未提交 active_probe");
   assert(
     savedPayload.active_probe.enabled === false,
@@ -2351,6 +2362,7 @@ async function createHistoricalImportFixtures(tempRoot) {
 function startFakeUpstream(port) {
   const failBeforeResponseCounts = new Map();
   const reasoningSequenceCounts = new Map();
+  const capacityErrorCounts = new Map();
   const identityProbeCounts = new Map();
   const probeRequests = [];
   const responseRequests = [];
@@ -2430,6 +2442,27 @@ function startFakeUpstream(port) {
         if (parsed.test_fail_before_response_always) {
           res.socket?.destroy();
           return;
+        }
+        if (parsed.test_capacity_error_once) {
+          const capacityKey = `${req.url}:capacity:${parsed.test_sequence_key || "default"}`;
+          const capacityCount = (capacityErrorCounts.get(capacityKey) || 0) + 1;
+          capacityErrorCounts.set(capacityKey, capacityCount);
+          if (capacityCount === 1) {
+            createJsonResponse(
+              res,
+              parsed.test_capacity_error_status ?? 429,
+              parsed.test_capacity_error_payload ?? {
+                error: {
+                  type: "rate_limit_error",
+                  code: "model_at_capacity",
+                  message:
+                    "Selected model is at capacity. Please try a different model.",
+                },
+              },
+              { "x-upstream-test": "responses-capacity-error" },
+            );
+            return;
+          }
         }
         const longContextProbe = extractLongContextProbeUnits(serializedInput);
         if (longContextProbe) {
@@ -3009,6 +3042,10 @@ async function run() {
       "guard_retry_attempts 默认应为 3",
     );
     assert(
+      statusBeforeUiRefresh.config?.retry_upstream_capacity_errors === true,
+      "retry_upstream_capacity_errors 默认应为 true",
+    );
+    assert(
       statusBeforeUiRefresh.config?.intercept_rule_mode === "reasoning_tokens",
       "intercept_rule_mode 默认应为 reasoning_tokens",
     );
@@ -3139,6 +3176,14 @@ async function run() {
       "管理页缺少网关内重试次数输入框",
     );
     assert(uiHtml.includes("网关内重试次数"), "管理页缺少网关内重试次数标签");
+    assert(
+      uiHtml.includes('id="retryUpstreamCapacityErrorsInput"'),
+      "管理页缺少上游 capacity 错误内重试开关",
+    );
+    assert(
+      uiHtml.includes("上游 capacity 错误内重试"),
+      "管理页缺少上游 capacity 错误内重试标签",
+    );
     assert(uiHtml.includes("TG群："), "管理页缺少 TG 群入口文案");
     assert(
       uiHtml.includes('href="https://t.me/AI_INPUT_IM"'),
@@ -3148,8 +3193,10 @@ async function run() {
       uiHtml.indexOf('name="non_stream_status_code"') <
         uiHtml.indexOf('name="guard_retry_attempts"') &&
         uiHtml.indexOf('name="guard_retry_attempts"') <
+          uiHtml.indexOf('name="retry_upstream_capacity_errors"') &&
+        uiHtml.indexOf('name="retry_upstream_capacity_errors"') <
           uiHtml.indexOf('name="log_match"'),
-      "网关内重试次数应位于 non_stream_status_code 与 log_match 之间",
+      "网关内重试次数和上游 capacity 开关应位于 non_stream_status_code 与 log_match 之间",
     );
     assert(
       !uiHtml.includes("516 命中次数"),
@@ -4425,6 +4472,110 @@ async function run() {
       "上游真实 429 不应触发规则内部重试",
     );
 
+    const capacityRetryKey = "upstream-capacity-then-ok";
+    const capacityRetryResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.4",
+          test_sequence_key: capacityRetryKey,
+          test_capacity_error_once: true,
+        }),
+      },
+    );
+    const capacityRetryBody = await capacityRetryResponse.json();
+    assert(
+      capacityRetryResponse.status === 200,
+      `开启 capacity 错误内重试后应恢复为 200: ${capacityRetryResponse.status}`,
+    );
+    assert(
+      capacityRetryBody?.usage?.output_tokens_details?.reasoning_tokens === 128,
+      "capacity 错误内重试后未返回第二次正常响应",
+    );
+    assert(
+      upstream.responseRequests.filter(
+        (entry) => entry.body?.test_sequence_key === capacityRetryKey,
+      ).length === 2,
+      "capacity 错误内重试应向上游请求 2 次",
+    );
+    const capacityRetryLogs = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    assert(
+      capacityRetryLogs.entries.some((entry) =>
+        `${entry.message || ""}`.includes(
+          "[upstream-capacity] non-stream path=/responses status=429 action=internal_retry remaining=1",
+        ),
+      ),
+      "capacity 错误内重试日志应标记为 internal_retry",
+    );
+
+    const disableCapacityRetryResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          retry_upstream_capacity_errors: false,
+        }),
+      },
+    );
+    assert(
+      disableCapacityRetryResponse.status === 200,
+      `关闭 capacity 错误内重试失败: ${disableCapacityRetryResponse.status}`,
+    );
+    const disabledCapacityStatus = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/status`,
+    ).then((response) => response.json());
+    assert(
+      disabledCapacityStatus.config?.retry_upstream_capacity_errors === false,
+      "关闭 capacity 错误内重试后状态接口未生效",
+    );
+    const capacityPassthroughKey = "upstream-capacity-passthrough";
+    const capacityPassthroughResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          test_sequence_key: capacityPassthroughKey,
+          test_capacity_error_once: true,
+        }),
+      },
+    );
+    const capacityPassthroughBody = await capacityPassthroughResponse.json();
+    assert(
+      capacityPassthroughResponse.status === 429,
+      `关闭 capacity 错误内重试后应透传上游状态: ${capacityPassthroughResponse.status}`,
+    );
+    assert(
+      capacityPassthroughBody?.error?.message ===
+        "Selected model is at capacity. Please try a different model.",
+      "关闭 capacity 错误内重试后响应体应原样透传",
+    );
+    assert(
+      upstream.responseRequests.filter(
+        (entry) => entry.body?.test_sequence_key === capacityPassthroughKey,
+      ).length === 1,
+      "关闭 capacity 错误内重试后不应追加上游请求",
+    );
+    const restoreCapacityRetryResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          retry_upstream_capacity_errors: true,
+        }),
+      },
+    );
+    assert(
+      restoreCapacityRetryResponse.status === 200,
+      `恢复 capacity 错误内重试失败: ${restoreCapacityRetryResponse.status}`,
+    );
+
     const statusBeforeExceededGuardRetry = await fetch(
       `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/status`,
     ).then((response) => response.json());
@@ -4871,11 +5022,11 @@ async function run() {
       statusWithModelInsights.model_insights.family_breakdown;
     assert(familyBreakdown, "status 缺少 family_breakdown");
     assert(
-      familyBreakdown["gpt-5.4"]?.consistency?.total_checked === 16,
+      familyBreakdown["gpt-5.4"]?.consistency?.total_checked === 18,
       `gpt-5.4 家族 total_checked 统计不正确: ${familyBreakdown["gpt-5.4"]?.consistency?.total_checked}`,
     );
     assert(
-      familyBreakdown["gpt-5.4"]?.consistency?.matched === 14,
+      familyBreakdown["gpt-5.4"]?.consistency?.matched === 15,
       `gpt-5.4 家族 matched 统计不正确: ${familyBreakdown["gpt-5.4"]?.consistency?.matched}`,
     );
     assert(
@@ -4883,11 +5034,11 @@ async function run() {
       "gpt-5.4 家族 mismatched 统计不正确",
     );
     assert(
-      familyBreakdown["gpt-5.4"]?.consistency?.unknown === 1,
+      familyBreakdown["gpt-5.4"]?.consistency?.unknown === 2,
       "gpt-5.4 家族 unknown 统计不正确",
     );
     assert(
-      Math.abs(familyBreakdown["gpt-5.4"]?.consistency?.match_ratio - 14 / 15) <
+      Math.abs(familyBreakdown["gpt-5.4"]?.consistency?.match_ratio - 15 / 16) <
         1e-9,
       "gpt-5.4 家族声明一致率应排除 unknown",
     );

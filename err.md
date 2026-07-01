@@ -1,5 +1,52 @@
 # err.md
 
+## 2026-07-02 Issue #11：上游 Selected model is at capacity 应在网关内重试
+
+### 现象
+
+- 上游返回：
+  - `Selected model is at capacity. Please try a different model.`
+- 旧行为会把该错误直接透传给 Codex。
+- 用户期望这类 capacity 响应由 gateway 内部吞掉并重试，减少会话被上游临时容量波动打断。
+- 同时该能力必须能开关，避免策略效果不好时无法回退。
+
+### 根因
+
+- 旧的 `guard_retry_attempts` 只服务于“命中本地拦截规则”的响应。
+- 上游真实 HTTP 错误此前按保守策略全部透传，避免误吞普通 `429` / `502`。
+- Issue #11 的 capacity 文案是更窄的上游容量错误特征，可以单独处理，但不能泛化成“所有 429 都重试”。
+
+### 处理
+
+- 新增配置：
+  - `retry_upstream_capacity_errors`
+  - 默认 `true`
+  - 管理页可开关，保存后热生效
+- 开启后，仅当上游错误响应包含：
+  - `Selected model is at capacity. Please try a different model.`
+  - 且 HTTP 状态为错误状态时，才触发内部重试。
+- capacity 内部重试与本地规则内部重试共用 `guard_retry_attempts`：
+  - `0` 表示不重试，直接透传或按现有规则返回
+  - 大于 `0` 时吞掉本次 capacity 响应并重新请求上游
+- 普通 `429` / `502` 不匹配该文案时仍原样透传。
+- 这类被吞掉的 capacity 响应会落 reasoning analytics 样本：
+  - `final_action=upstream_capacity_internal_retry`
+  - `blocked_by_gateway=true`
+  - `matched_current_rule=false`
+
+### 验证
+
+- 红测：
+  - `node .\scripts\test-gateway-e2e.mjs`
+  - 先失败在 `retry_upstream_capacity_errors 默认应为 true`
+- 修复后：
+  - `node --check .\gateway.mjs`
+  - `node --check .\scripts\admin-lib.mjs`
+  - `node --check .\scripts\test-gateway-e2e.mjs`
+  - `node --check .\scripts\test-install-restore.mjs`
+  - `node .\scripts\test-gateway-e2e.mjs`
+  - `node .\scripts\test-install-restore.mjs`
+
 ## 2026-07-02 final answer only 模式不能拦截 Codex 上下文压缩请求
 
 ### 现象

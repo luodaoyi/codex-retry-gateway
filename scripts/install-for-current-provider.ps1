@@ -86,6 +86,7 @@ $gatewayConfig = [ordered]@{
   intercept_non_streaming = [bool](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "intercept_non_streaming" -DefaultValue $true)
   non_stream_status_code = [int](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "non_stream_status_code" -DefaultValue 502)
   guard_retry_attempts = [int](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "guard_retry_attempts" -DefaultValue 3)
+  retry_upstream_capacity_errors = [bool](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "retry_upstream_capacity_errors" -DefaultValue $true)
   stream_action = if ([string]::IsNullOrWhiteSpace([string](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "stream_action"))) { "strict_502" } else { [string](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "stream_action") }
   log_match = [bool](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "log_match" -DefaultValue $true)
   health_path = if ([string]::IsNullOrWhiteSpace([string](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "health_path"))) { "/__codex_retry_gateway/health" } else { [string](Get-OptionalPropertyValue -Object $existingGatewayConfig -Name "health_path") }

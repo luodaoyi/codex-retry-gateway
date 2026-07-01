@@ -186,6 +186,10 @@ async function run() {
       "Gateway config default intercept_non_streaming should be true",
     );
     assert(gatewayConfig.guard_retry_attempts === 3, "Gateway config default guard_retry_attempts should be 3");
+    assert(
+      gatewayConfig.retry_upstream_capacity_errors === true,
+      "Gateway config default retry_upstream_capacity_errors should be true",
+    );
     await mkdir(path.join(legacyStateRoot, "config"), { recursive: true });
     const legacyGatewayConfig = {
       ...gatewayConfig,
@@ -196,6 +200,7 @@ async function run() {
     delete legacyGatewayConfig.intercept_non_streaming;
     delete legacyGatewayConfig.intercept_rule_mode;
     delete legacyGatewayConfig.guard_retry_attempts;
+    delete legacyGatewayConfig.retry_upstream_capacity_errors;
     await writeFile(
       path.join(legacyStateRoot, "config", "config.json"),
       `${JSON.stringify(legacyGatewayConfig, null, 2)}\n`,
@@ -229,6 +234,10 @@ async function run() {
       "Install script did not migrate missing guard_retry_attempts",
     );
     assert(
+      reinstalledGatewayConfig.retry_upstream_capacity_errors === true,
+      "Install script did not migrate missing retry_upstream_capacity_errors",
+    );
+    assert(
       reinstalledGatewayConfig.request_body_limit_bytes === 100 * 1024 * 1024,
       "Install script did not migrate legacy 10MB request_body_limit_bytes",
     );
@@ -242,6 +251,7 @@ async function run() {
     delete gatewayConfig.intercept_non_streaming;
     delete gatewayConfig.intercept_rule_mode;
     delete gatewayConfig.guard_retry_attempts;
+    delete gatewayConfig.retry_upstream_capacity_errors;
     gatewayConfig.request_body_limit_bytes = 10 * 1024 * 1024;
     await writeFile(
       path.join(stateRoot, "config", "config.json"),
@@ -275,6 +285,10 @@ async function run() {
     assert(
       migratedGatewayConfig.guard_retry_attempts === 3,
       "Launch UI reuse did not migrate missing guard_retry_attempts",
+    );
+    assert(
+      migratedGatewayConfig.retry_upstream_capacity_errors === true,
+      "Launch UI reuse did not migrate missing retry_upstream_capacity_errors",
     );
     assert(
       migratedGatewayConfig.request_body_limit_bytes === 100 * 1024 * 1024,
@@ -311,6 +325,14 @@ async function run() {
     assert(uiHtml.includes("实际拦截占比"), "Management UI HTML did not include actual block ratio stats");
     assert(uiHtml.includes('id="guardRetryAttemptsInput"'), "Management UI HTML did not include guard retry input");
     assert(uiHtml.includes("网关内重试次数"), "Management UI HTML did not include guard retry label");
+    assert(
+      uiHtml.includes('id="retryUpstreamCapacityErrorsInput"'),
+      "Management UI HTML did not include upstream capacity retry input",
+    );
+    assert(
+      uiHtml.includes("上游 capacity 错误内重试"),
+      "Management UI HTML did not include upstream capacity retry label",
+    );
     assert(uiHtml.includes("TG群："), "Management UI HTML did not include Telegram group label");
     assert(uiHtml.includes('href="https://t.me/AI_INPUT_IM"'), "Management UI HTML did not include Telegram group link");
     assert(uiHtml.includes("实时日志"), "Management UI HTML did not include live log panel");
@@ -338,6 +360,10 @@ async function run() {
       "Status API did not expose upgraded request_body_limit_bytes default",
     );
     assert(statusPayload.config?.guard_retry_attempts === 3, "Status API did not expose guard_retry_attempts default");
+    assert(
+      statusPayload.config?.retry_upstream_capacity_errors === true,
+      "Status API did not expose retry_upstream_capacity_errors default",
+    );
     assert(statusPayload.state?.original_base_url === `http://127.0.0.1:${upstreamPort}`, "Status API did not expose install state");
     assert(statusPayload.metrics?.inspected_response_count === 0, "Status API did not expose initial inspected count");
     assert(statusPayload.metrics?.reasoning_516_count === 0, "Status API did not expose initial 516 count");
@@ -409,6 +435,7 @@ async function run() {
         intercept_non_streaming: false,
         non_stream_status_code: 503,
         guard_retry_attempts: 2,
+        retry_upstream_capacity_errors: false,
         log_match: false,
         active_probe: {
           enabled: true,
@@ -421,6 +448,10 @@ async function run() {
     assert(saveConfigResponse.status === 200, `Save config API failed: ${saveConfigResponse.status}`);
     assert(saveConfigPayload.config?.non_stream_status_code === 503, "Save config API did not return updated config");
     assert(saveConfigPayload.config?.guard_retry_attempts === 2, "Save config API did not return guard_retry_attempts");
+    assert(
+      saveConfigPayload.config?.retry_upstream_capacity_errors === false,
+      "Save config API did not return retry_upstream_capacity_errors",
+    );
     assert(
       saveConfigPayload.config?.intercept_rule_mode === "final_answer_only_high_xhigh",
       "Save config API did not return intercept_rule_mode",
@@ -448,6 +479,10 @@ async function run() {
       "Saved config file did not persist intercept_non_streaming",
     );
     assert(updatedGatewayConfig.guard_retry_attempts === 2, "Saved config file did not persist guard_retry_attempts");
+    assert(
+      updatedGatewayConfig.retry_upstream_capacity_errors === false,
+      "Saved config file did not persist retry_upstream_capacity_errors",
+    );
     assert(
       updatedGatewayConfig.active_probe?.enabled === true,
       "Saved config file did not persist active_probe.enabled",

@@ -199,6 +199,7 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
 - 改 `endpoints`
 - 改 `non_stream_status_code`
 - 改 `guard_retry_attempts`
+- 开关 `retry_upstream_capacity_errors`
 - 开关 `log_match`
 - 动态查看当前 gateway 的实时日志
 - 一键恢复 Codex 原设置
@@ -210,6 +211,14 @@ Issue #9 收口说明：
 - 已补上下文压缩保护：`x-codex-beta-features=remote_compaction_v2` 的请求即使出现 `reasoning_tokens=0/null + final answer only`，也只观察和落盘，不做拦截，避免压缩上下文失败。
 - PR 合并后可关闭 GitHub Issue #9：`https://github.com/nonononull/codex-retry-gateway/issues/9`。
 
+Issue #11 收口说明：
+
+- 已增加 `retry_upstream_capacity_errors` 开关，默认开启。
+- 开启后，上游返回 `Selected model is at capacity. Please try a different model.` 这类 capacity 错误时，gateway 会在内部吞掉本次错误并按 `guard_retry_attempts` 继续请求上游，不再直接透传给 Codex。
+- 关闭后，capacity 错误保持旧行为，原样透传给 Codex。
+- 普通 `429` / `502` 不会因为这个开关被泛化重试，避免把真实限流或上游故障误吞。
+- PR 合并后可关闭 GitHub Issue #11：`https://github.com/nonononull/codex-retry-gateway/issues/11`。
+
 说明：
 
 - 页面保存配置后会立即热生效，不需要重启 gateway
@@ -220,8 +229,9 @@ Issue #9 收口说明：
 - 当前规则命中总数表示命中当前拦截规则的次数，不等于实际拦截次数；默认规则是 `reasoning_equals`，切到 `final_answer_only_high_xhigh` 后则按 high/xhigh 的 final answer only 结构计数
 - 实际拦截占比 = 实际拦截总数 / 被检查响应总数
 - 关闭某一类拦截后，该类命中仍会继续计入规则命中与模型一致性观测，但不会计入实际拦截
-- `guard_retry_attempts` 只对命中当前拦截规则且会被实际拦截的响应生效；上游真实 `429` / `502` 等 HTTP 错误如果没有命中规则，会继续原样透传
-- 网关内部规则重试的每次上游尝试都会计入代理请求总数；每次拿到并检查的响应都会计入被检查响应总数；命中会计入当前规则命中总数，被吞掉重试或最终拦截会计入实际拦截总数
+- `guard_retry_attempts` 对命中当前拦截规则且会被实际拦截的响应生效；开启 `retry_upstream_capacity_errors` 后，也对指定上游 capacity 错误生效
+- `retry_upstream_capacity_errors` 只匹配 `Selected model is at capacity. Please try a different model.`，普通 `429` / `502` 等 HTTP 错误如果没有命中该特征，会继续原样透传
+- 网关内部重试的每次上游尝试都会计入代理请求总数；每次拿到并检查的响应都会计入被检查响应总数；命中当前拦截规则会计入当前规则命中总数，被吞掉重试或最终拦截会计入实际拦截总数
 - 命中日志里的 `action=internal_retry remaining=N` 表示本次命中只在网关内部吞掉并继续重试，没有把失败状态返回给 Codex；`action=return_status_502` 才表示已经达到重试上限或配置为 `0`，本次会对 Codex 返回拦截状态
 - `context_compaction` 样本会保留在大盘和导出里，字段包含 `request_kind` / `intercept_exempt_reason`，但不会计入当前规则命中或实际拦截
 - 模型家族一致性面板里的“上游模型”是上游自报
@@ -335,8 +345,14 @@ macOS / Linux: ~/.codex-retry-gateway/config/config.json
 - `guard_retry_attempts`
   - 默认 `3`
   - 命中当前拦截规则后，网关内部额外重试上游的次数
-  - `0` 表示不做网关内部规则重试
+  - 开启 `retry_upstream_capacity_errors` 后，也用于上游 capacity 错误的内部重试次数
+  - `0` 表示不做网关内部重试
   - 无上限，管理页保存后立即生效
+- `retry_upstream_capacity_errors`
+  - 默认 `true`
+  - 开启后，匹配上游 `Selected model is at capacity. Please try a different model.` 错误并在 gateway 内部重试
+  - 关闭后，上述 capacity 错误也按旧行为原样透传
+  - 普通 `429` / `502` 不会因为这个开关被泛化重试
 - `stream_action`
   - 默认 `strict_502`
   - `strict_502`：先缓存整个流，命中当前拦截规则时统一返回 `502`
