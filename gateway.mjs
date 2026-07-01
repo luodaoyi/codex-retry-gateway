@@ -1052,10 +1052,9 @@ function stringifyRequestKindSignal(value) {
 
 function detectRequestKind(headers = {}, requestJson = null) {
   const headerSignals = [
-    getHeaderValue(headers, "x-codex-beta-features"),
-    getHeaderValue(headers, "openai-beta"),
     getHeaderValue(headers, "x-codex-request-kind"),
     getHeaderValue(headers, "x-codex-purpose"),
+    getHeaderValue(headers, "x-codex-turn-metadata"),
   ].join(" ");
   if (includesAnyContextCompactionMarker(headerSignals)) {
     return REQUEST_KIND_CONTEXT_COMPACTION;
@@ -1708,7 +1707,6 @@ function summarizeCandidatePatternStatus(samples) {
     entries.length > 0 &&
     entries.every(
       (sample) =>
-        sample?.request_kind === REQUEST_KIND_CONTEXT_COMPACTION ||
         sample?.intercept_exempt_reason === REQUEST_KIND_CONTEXT_COMPACTION,
     )
   ) {
@@ -9312,9 +9310,16 @@ function isFinalAnswerOnlyStructure(structure) {
   );
 }
 
+function isContextCompactionExemptReasoning(reasoning) {
+  return reasoning === 0;
+}
+
 function buildInterceptRuleMatch(config, reasoning, reasoningSample, structure) {
   const mode = normalizeInterceptRuleMode(config?.intercept_rule_mode);
-  if (reasoningSample?.request_kind === REQUEST_KIND_CONTEXT_COMPACTION) {
+  if (
+    reasoningSample?.request_kind === REQUEST_KIND_CONTEXT_COMPACTION &&
+    isContextCompactionExemptReasoning(reasoning)
+  ) {
     return {
       mode,
       matched: false,
@@ -9343,6 +9348,12 @@ function buildInterceptRuleMatch(config, reasoning, reasoningSample, structure) 
     reasonForLog: `reasoning_tokens=${reasoning}`,
     blockedReasoning: reasoning,
   };
+}
+
+function applyInterceptExemptionToSample(sample, ruleMatch) {
+  if (ruleMatch?.exemptReason) {
+    sample.intercept_exempt_reason = ruleMatch.exemptReason;
+  }
 }
 
 function isExpectedStreamTermination(error) {
@@ -9431,6 +9442,7 @@ async function handleNonStreaming({
   }
   const reasoning = parsed ? extractReasoningTokens(parsed) : null;
   const ruleMatch = buildInterceptRuleMatch(config, reasoning, reasoningSample, structureAccumulator);
+  applyInterceptExemptionToSample(reasoningSample, ruleMatch);
   const matched = ruleMatch.matched;
   const capacityRetryMatched =
     config.retry_upstream_capacity_errors !== false &&
@@ -9649,6 +9661,7 @@ async function handleStreaming({
         reasoningSample,
         structureAccumulator,
       );
+      applyInterceptExemptionToSample(reasoningSample, finalRuleMatch);
       if (!inspectedRecorded && finalRuleMatch.matched) {
         recordInspectedResponse(monitor, observedReasoning, true, "stream");
         inspectedRecorded = true;
@@ -9745,6 +9758,7 @@ async function handleStreaming({
       observedReasoning = reasoning;
     }
     const ruleMatch = buildInterceptRuleMatch(config, reasoning, reasoningSample, structureAccumulator);
+    applyInterceptExemptionToSample(reasoningSample, ruleMatch);
     if (
       ruleMatch.mode === INTERCEPT_RULE_MODE_REASONING_TOKENS &&
       ruleMatch.matched
@@ -9864,10 +9878,7 @@ async function proxyRequest(runtime, req, res) {
   requestTracking.request_started_at_ms = Date.now();
   requestTracking.localConfigModel = null;
   requestTracking.request_kind = detectRequestKind(req.headers, null);
-  requestTracking.intercept_exempt_reason =
-    requestTracking.request_kind === REQUEST_KIND_CONTEXT_COMPACTION
-      ? REQUEST_KIND_CONTEXT_COMPACTION
-      : null;
+  requestTracking.intercept_exempt_reason = null;
   req.__codexRetryGatewayRequestTracking = requestTracking;
 
   let requestBody;
@@ -9894,10 +9905,7 @@ async function proxyRequest(runtime, req, res) {
     : null;
   requestTracking.requestJson = requestJson;
   requestTracking.request_kind = detectRequestKind(req.headers, requestJson);
-  requestTracking.intercept_exempt_reason =
-    requestTracking.request_kind === REQUEST_KIND_CONTEXT_COMPACTION
-      ? REQUEST_KIND_CONTEXT_COMPACTION
-      : null;
+  requestTracking.intercept_exempt_reason = null;
   requestTracking.request_summary = buildRequestSummary(requestBody, req.headers);
   requestTracking.request_payload_excerpt = buildRequestPayloadExcerpt(requestBody);
   runtime.lastClientUserAgent =

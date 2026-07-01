@@ -120,6 +120,15 @@
   - `node --check .\scripts\test-gateway-e2e.mjs`
   - `node .\scripts\test-gateway-e2e.mjs`
 
+### 后续修正
+
+- `x-codex-beta-features: remote_compaction_v2` 只是 Codex Desktop 的 beta feature 标记，不足以证明当前请求正在做上下文压缩。
+- 真实样本显示普通 `request_kind=turn` 也会带 `remote_compaction_v2`，如果把该头直接识别成 `context_compaction`，会导致普通回答里的 `reasoning_tokens=516` 被错误豁免，既不命中规则，也不会触发 `guard_retry_attempts` 内部重试。
+- 新口径：
+  - 只有显式 `context_compaction` 信号才标记 `request_kind=context_compaction`
+  - 只有 `context_compaction + reasoning_tokens=0` 才写 `intercept_exempt_reason=context_compaction`
+  - `null`、`18`、`516/1034/1552` 等其它值不走压缩豁免，仍按当前拦截规则处理
+
 ## 2026-07-01 新增 final answer only 规则样本后，模型家族精确统计需要同步
 
 ### 现象

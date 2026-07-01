@@ -16,7 +16,7 @@ TG群：[https://t.me/AI_INPUT_IM](https://t.me/AI_INPUT_IM)
 - 非流式命中默认集合 `reasoning_tokens = 516 / 1034 / 1552` 时，默认先在网关内部重试，超过上限后才返回 `502`
 - 流式命中时默认先缓存并判断；一旦命中默认集合 `516 / 1034 / 1552`，默认先在网关内部重试，超过上限后才统一返回 `502`
 - 拦截规则支持二选一：默认并推荐 `reasoning_tokens` 长度模式；`final_answer_only_high_xhigh` 仅作为实验收窄规则，不建议替代默认 516/1034/1552 主拦截
-- Codex `remote_compaction_v2` 上下文压缩请求会标记为 `request_kind=context_compaction`，不触发当前拦截规则，但仍完整进入 reasoning analytics
+- 只有显式 `context_compaction` 且 `reasoning_tokens=0` 的压缩响应可豁免拦截；`remote_compaction_v2` 仅是 beta feature 标记，普通 turn 仍按当前规则命中并内部重试
 - 默认同时拦截 root 路径和 `/v1` 路径：
   - `/responses`
   - `/chat/completions`
@@ -208,7 +208,7 @@ Issue #9 收口说明：
 
 - 已增加 reasoning 行为统计大盘，包含 `reasoning_tokens` 高频排行，用于识别高频 reason token 作为候选特征值。
 - 高频排行不是自动定性结论，只作为候选观察入口；后续判断仍应结合模型家族、`reasoning.effort`、final answer only、commentary observed、耗时 / TPS / token 规模归一化偏差一起看。
-- 已补上下文压缩保护：`x-codex-beta-features=remote_compaction_v2` 的请求即使出现 `reasoning_tokens=0/null + final answer only`，也只观察和落盘，不做拦截，避免压缩上下文失败。
+- 已补上下文压缩保护：只有显式 `context_compaction` 且 `reasoning_tokens=0` 的响应只观察和落盘；`null` 或其它 token 值仍按当前拦截规则处理。
 - PR 合并后可关闭 GitHub Issue #9：`https://github.com/nonononull/codex-retry-gateway/issues/9`。
 
 Issue #11 收口说明：
@@ -233,7 +233,7 @@ Issue #11 收口说明：
 - `retry_upstream_capacity_errors` 只匹配 `Selected model is at capacity. Please try a different model.`，普通 `429` / `502` 等 HTTP 错误如果没有命中该特征，会继续原样透传
 - 网关内部重试的每次上游尝试都会计入代理请求总数；每次拿到并检查的响应都会计入被检查响应总数；命中当前拦截规则会计入当前规则命中总数，被吞掉重试或最终拦截会计入实际拦截总数
 - 命中日志里的 `action=internal_retry remaining=N` 表示本次命中只在网关内部吞掉并继续重试，没有把失败状态返回给 Codex；`action=return_status_502` 才表示已经达到重试上限或配置为 `0`，本次会对 Codex 返回拦截状态
-- `context_compaction` 样本会保留在大盘和导出里，字段包含 `request_kind` / `intercept_exempt_reason`，但不会计入当前规则命中或实际拦截
+- `context_compaction` 样本会保留在大盘和导出里；只有实际豁免的 `reasoning_tokens=0` 样本会写入 `intercept_exempt_reason=context_compaction`，其它值仍会计入当前规则命中和实际拦截
 - 模型家族一致性面板里的“上游模型”是上游自报
 - “声明一致”不等于已证明真实运行一致
 - “400K 家族异常”只表示行为上疑似不符合 `1M` 家族
@@ -330,7 +330,7 @@ macOS / Linux: ~/.codex-retry-gateway/config/config.json
   - `reasoning_tokens`：稳定主规则，命中 `reasoning_equals` 即视为当前规则命中；真实使用中 516 拦截仍可能直接影响任务正确性
   - `final_answer_only_high_xhigh`：实验收窄规则，仅当 `reasoning.effort` 为 `high` / `xhigh`，且响应结构是 `final answer only`、未观察到 commentary、无 tool call、无 reasoning item 时命中；它可能漏掉仍影响正确性的 516 样本，不建议替代默认 516/1034/1552 主拦截
   - 两个模式二选一；效果不确定或以任务正确性优先时，使用 `reasoning_tokens`
-  - `request_kind=context_compaction` 的上下文压缩请求不参与上述拦截命中，只做观察和落盘
+  - `request_kind=context_compaction` 只有在 `reasoning_tokens=0` 时豁免；`516/1034/1552` 等命中值仍按当前规则处理，并受 `guard_retry_attempts` 控制
 - `intercept_streaming`
   - 默认 `true`
   - 控制流式响应命中当前拦截规则后是否真正拦截

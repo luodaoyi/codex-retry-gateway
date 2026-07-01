@@ -4168,6 +4168,7 @@ async function run() {
         headers: {
           "content-type": "application/json",
           "x-codex-beta-features": "remote_compaction_v2",
+          "x-codex-request-kind": "context_compaction",
         },
         body: JSON.stringify({
           model: "gpt-5.5",
@@ -4189,6 +4190,7 @@ async function run() {
         headers: {
           "content-type": "application/json",
           "x-codex-beta-features": "remote_compaction_v2",
+          "x-codex-request-kind": "context_compaction",
         },
         body: JSON.stringify({
           model: "gpt-5.5",
@@ -4200,8 +4202,8 @@ async function run() {
       },
     );
     assert(
-      compactionFinalOnlyNullResponse.status === 200,
-      `remote_compaction_v2 reasoning_tokens=null 不应被 final only 模式拦截: ${compactionFinalOnlyNullResponse.status}`,
+      compactionFinalOnlyNullResponse.status === 502,
+      `context_compaction 仅 reasoning_tokens=0 可豁免，null 应按 final only 规则拦截: ${compactionFinalOnlyNullResponse.status}`,
     );
     const compactionFinalOnlyLowResponse = await fetch(
       `http://127.0.0.1:${gatewayPort}/responses`,
@@ -4210,6 +4212,7 @@ async function run() {
         headers: {
           "content-type": "application/json",
           "x-codex-beta-features": "remote_compaction_v2",
+          "x-codex-request-kind": "context_compaction",
         },
         body: JSON.stringify({
           model: "gpt-5.5",
@@ -4231,25 +4234,35 @@ async function run() {
       (sample) => sample.request_kind === "context_compaction",
     );
     assert(
-      compactionSamples.length >= 2,
+      compactionSamples.length >= 3,
       `remote_compaction_v2 样本应以 context_compaction 落盘: ${JSON.stringify(compactionSamples)}`,
     );
+    const compactionZeroSample = compactionSamples.find((sample) => sample.reasoning_tokens === 0);
+    const compactionNullSample = compactionSamples.find((sample) => sample.reasoning_tokens === null);
+    const compactionLowSample = compactionSamples.find((sample) => sample.reasoning_tokens === 18);
     assert(
-      compactionSamples.some((sample) => sample.reasoning_tokens === 0) &&
-        compactionSamples.some((sample) => sample.reasoning_tokens === null) &&
-        compactionSamples.some((sample) => sample.reasoning_tokens === 18),
+      compactionZeroSample && compactionNullSample && compactionLowSample,
       `context_compaction 样本应覆盖 reasoning_tokens=0/null: ${JSON.stringify(compactionSamples)}`,
     );
     assert(
-      compactionSamples.every(
-        (sample) =>
-          sample.final_action === "passed" &&
-          sample.client_http_status === 200 &&
-          sample.matched_current_rule === false &&
-          sample.blocked_by_gateway === false &&
-          sample.intercept_exempt_reason === "context_compaction",
-      ),
-      `context_compaction 样本不应计入拦截命中或实际拦截: ${JSON.stringify(compactionSamples)}`,
+      compactionZeroSample.final_action === "passed" &&
+        compactionZeroSample.client_http_status === 200 &&
+        compactionZeroSample.matched_current_rule === false &&
+        compactionZeroSample.blocked_by_gateway === false &&
+        compactionZeroSample.intercept_exempt_reason === "context_compaction",
+      `只有 reasoning_tokens=0 的 context_compaction 样本应标记豁免: ${JSON.stringify(compactionZeroSample)}`,
+    );
+    assert(
+      compactionNullSample.matched_current_rule === true &&
+        compactionNullSample.blocked_by_gateway === true &&
+        compactionNullSample.intercept_exempt_reason !== "context_compaction",
+      `reasoning_tokens=null 的 context_compaction 样本不应豁免，应按 final only 规则拦截: ${JSON.stringify(compactionNullSample)}`,
+    );
+    assert(
+      compactionLowSample.final_action === "passed" &&
+        compactionLowSample.matched_current_rule === false &&
+        compactionLowSample.intercept_exempt_reason !== "context_compaction",
+      `reasoning_tokens=18 的 context_compaction 样本不应标记压缩豁免: ${JSON.stringify(compactionLowSample)}`,
     );
     const compactionExemptPattern = (compactionAnalytics.candidate_patterns || []).find(
       (entry) =>
@@ -4257,8 +4270,8 @@ async function run() {
         "reasoning=18|final_answer_only|commentary_not_observed",
     );
     assert(
-      compactionExemptPattern?.status === "context_compaction_exempt",
-      `上下文压缩豁免候选组合应明确标记 context_compaction_exempt: ${JSON.stringify(compactionExemptPattern)}`,
+      compactionExemptPattern?.status === "observe_only",
+      `非 0 的 context_compaction 候选组合不应标记 context_compaction_exempt: ${JSON.stringify(compactionExemptPattern)}`,
     );
     const finalOnlyHighStreamResponse = await fetch(
       `http://127.0.0.1:${gatewayPort}/responses`,
@@ -4509,6 +4522,70 @@ async function run() {
       statusAfterNonStreamGuardRetry.metrics.blocked_non_streaming_count ===
         statusBeforeGuardRetry.metrics.blocked_non_streaming_count + 1,
       "非流式内部重试首次吞掉响应应计入非流式拦截次数",
+    );
+
+    const statusBeforeBetaTurnRetry = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/status`,
+    ).then((response) => response.json());
+    const betaTurnRetryKey = "non-stream-beta-turn-516-then-128";
+    const betaTurnRetryResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-codex-beta-features": "remote_compaction_v2",
+          "x-codex-turn-metadata": JSON.stringify({ request_kind: "turn" }),
+        },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          reasoning: { effort: "xhigh" },
+          test_sequence_key: betaTurnRetryKey,
+          test_reasoning_sequence: [516, 128],
+          test_include_reasoning_item: true,
+        }),
+      },
+    );
+    const betaTurnRetryBody = await betaTurnRetryResponse.json();
+    assert(
+      betaTurnRetryResponse.status === 200,
+      `remote_compaction_v2 普通 turn 命中 516 后应内部重试恢复为 200: ${betaTurnRetryResponse.status}`,
+    );
+    assert(
+      betaTurnRetryBody?.usage?.output_tokens_details?.reasoning_tokens === 128,
+      "remote_compaction_v2 普通 turn 内部重试未返回第二次正常响应",
+    );
+    assert(
+      upstream.responseRequests.filter(
+        (entry) => entry.body?.test_sequence_key === betaTurnRetryKey,
+      ).length === 2,
+      "remote_compaction_v2 普通 turn 命中 516 后应向上游请求 2 次",
+    );
+    const statusAfterBetaTurnRetry = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/status`,
+    ).then((response) => response.json());
+    assert(
+      statusAfterBetaTurnRetry.metrics.matched_response_count ===
+        statusBeforeBetaTurnRetry.metrics.matched_response_count + 1 &&
+        statusAfterBetaTurnRetry.metrics.blocked_response_count ===
+          statusBeforeBetaTurnRetry.metrics.blocked_response_count + 1,
+      "remote_compaction_v2 普通 turn 命中 516 应计入一次命中和一次内部拦截",
+    );
+    const betaTurnAnalytics = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/analytics/reasoning`,
+    ).then((response) => response.json());
+    const betaTurnBlockedSample = (betaTurnAnalytics.recent_samples || []).find(
+      (sample) =>
+        sample.reasoning_tokens === 516 &&
+        `${sample.request_payload_excerpt || ""}`.includes(betaTurnRetryKey),
+    );
+    assert(
+      betaTurnBlockedSample?.request_kind === "normal" &&
+        betaTurnBlockedSample?.matched_current_rule === true &&
+        betaTurnBlockedSample?.blocked_by_gateway === true &&
+        betaTurnBlockedSample?.final_action === "internal_retry" &&
+        betaTurnBlockedSample?.intercept_exempt_reason !== "context_compaction",
+      `remote_compaction_v2 普通 turn 不应被误判为 context_compaction: ${JSON.stringify(betaTurnBlockedSample)}`,
     );
 
     const upstreamErrorKey = "real-upstream-429";
@@ -5135,11 +5212,11 @@ async function run() {
       "gpt-5.4 家族 rebuild_suspected_count 统计不正确",
     );
     assert(
-      familyBreakdown["gpt-5.5"]?.consistency?.total_checked === 16,
+      familyBreakdown["gpt-5.5"]?.consistency?.total_checked === 18,
       `gpt-5.5 家族 total_checked 统计不正确: ${familyBreakdown["gpt-5.5"]?.consistency?.total_checked}`,
     );
     assert(
-      familyBreakdown["gpt-5.5"]?.consistency?.matched === 15,
+      familyBreakdown["gpt-5.5"]?.consistency?.matched === 17,
       "gpt-5.5 家族 matched 统计不正确",
     );
     assert(
@@ -5151,7 +5228,7 @@ async function run() {
       "gpt-5.5 家族 unknown 统计不正确",
     );
     assert(
-      Math.abs(familyBreakdown["gpt-5.5"]?.consistency?.match_ratio - 15 / 16) <
+      Math.abs(familyBreakdown["gpt-5.5"]?.consistency?.match_ratio - 17 / 18) <
         1e-9,
       "gpt-5.5 家族声明一致率统计不正确",
     );

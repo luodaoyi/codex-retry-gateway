@@ -97,7 +97,7 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
 - `reasoning_tokens` 是默认并推荐的稳定主规则，命中 `reasoning_equals` 即视为当前规则命中；真实使用中 516 拦截仍可能直接影响任务正确性。
 - `final_answer_only_high_xhigh` 是实验收窄规则，仅在 `reasoning.effort=high/xhigh` 下拦截 `final answer only + commentary not observed + no tool call + no reasoning item` 的响应结构；它可能漏掉仍影响正确性的 516 样本，不建议替代默认 516/1034/1552 主拦截。
 - 两个模式二选一；`intercept_streaming` / `intercept_non_streaming` 只控制命中当前规则后是否真正拦截。
-- `x-codex-beta-features=remote_compaction_v2` 会识别为 `request_kind=context_compaction`；这类上下文压缩请求只采集和观察，不触发当前拦截规则，避免 `reasoning_tokens=0/null` 导致压缩失败。
+- `remote_compaction_v2` 只是 beta feature 标记，不单独识别为压缩请求；只有显式 `context_compaction` 且 `reasoning_tokens=0` 的响应会豁免，`516/1034/1552` 等命中值仍按当前规则处理并受 `guard_retry_attempts` 控制。
 - `retry_upstream_capacity_errors` 默认开启，只匹配上游 `Selected model is at capacity. Please try a different model.`；命中后按 `guard_retry_attempts` 在网关内部重试，普通 `429` / `502` 仍原样透传。
 
 reasoning 统计落盘说明：
