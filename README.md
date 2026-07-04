@@ -13,10 +13,11 @@ TG群：[https://t.me/AI_INPUT_IM](https://t.me/AI_INPUT_IM)
 
 - 保持 Codex 继续使用现有 `auth.json`
 - 只把 `config.toml` 的当前 provider `base_url` 改成本地网关
-- 非流式命中默认集合 `reasoning_tokens = 516 / 1034 / 1552` 时，默认先在网关内部重试，超过上限后才返回 `502`
-- 流式命中时默认先缓存并判断；一旦命中默认集合 `516 / 1034 / 1552`，默认先在网关内部重试，超过上限后才统一返回 `502`
-- 拦截规则支持二选一：默认并推荐 `reasoning_tokens` 长度模式；`final_answer_only_high_xhigh` 仅作为实验收窄规则，不建议替代默认 516/1034/1552 主拦截
+- 非流式默认按 `518*n - 2` 公式匹配 `reasoning_tokens = 516 / 1034 / 1552 / 2070...`，命中后先在网关内部重试，超过上限后才返回 `502`
+- 流式命中时默认使用 Responses 续写恢复；无法续写、续写后仍命中或超过上限时，才回到内部重试 / `502` 保护链路
+- 拦截规则默认并推荐 `reasoning_tokens` 长度模式；`final_answer_only_high_xhigh` 仅作为实验收窄规则；续写恢复是流式命中动作，不是拦截规则本身
 - `final_answer_only_high_xhigh` 排除普通 `reasoning_tokens=0`，这类样本只观察落盘；`reasoning_tokens=null/缺失` 或非 0 的 high/xhigh final answer only 仍可命中实验规则
+- `stream_action=continuation_recovery` 是默认流式命中动作，不是单独的拦截规则。命中样本仍由 `intercept_rule_mode` 和 `reasoning_match_mode` 决定：默认公式模式匹配 `516、1034、1552、2070...` 这类所有 `518*n - 2` 值；命中后只对 `/responses` 和 `/v1/responses` 的流式响应尝试续写恢复，使用 `guard_retry_attempts=5` 控制最大内部尝试次数，无法续写时回到既有内部重试 / 拦截逻辑
 - 只有显式 `context_compaction` 且 `reasoning_tokens=0` 的压缩响应可豁免拦截；`remote_compaction_v2` 仅是 beta feature 标记，普通 turn 的 516/1034/1552 仍按 `reasoning_tokens` 主规则命中并内部重试
 - 默认同时拦截 root 路径和 `/v1` 路径：
   - `/responses`
@@ -195,8 +196,10 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
   - 文件级索引 Codex session JSONL 大文件
   - 展示导入进度、数据源、请求量、token、延迟、日志行数和 session 体积
 - 改 `reasoning_equals`
+- 改 `reasoning_match_mode`：手动填写 `reasoning_equals`，或使用完整 `518*n - 2` 公式
 - 改拦截规则模式：推荐 `reasoning_tokens`；`final_answer_only_high_xhigh` 仅用于短时实验和候选特征复盘
 - 改流式 / 非流式拦截目标
+- 改 `stream_action`：标准保护、Responses 流式续写恢复、或兼容旧行为断开连接
 - 改 `endpoints`
 - 改 `non_stream_status_code`
 - 改 `guard_retry_attempts`
@@ -227,10 +230,10 @@ Issue #11 收口说明：
 - 日常恢复优先用 UI；`restore-codex-config.ps1` 作为脚本级应急回滚入口保留
 - UI 恢复不会再额外拉起恢复子进程，而是由当前 gateway 直接完成恢复并退出
 - 统计口径默认按“本次 gateway 启动以来”累计
-- 当前规则命中总数表示命中当前拦截规则的次数，不等于实际拦截次数；默认规则是 `reasoning_equals`，切到 `final_answer_only_high_xhigh` 后则按 high/xhigh 的 final answer only 结构计数，并排除普通 `reasoning_tokens=0`
+- 当前规则命中总数表示命中当前拦截规则的次数，不等于实际拦截次数；默认规则模式是 `reasoning_tokens`，命中值默认来自完整 `518*n - 2` 公式，也可切回手动 `reasoning_equals`；切到 `final_answer_only_high_xhigh` 后则按 high/xhigh 的 final answer only 结构计数并排除普通 `reasoning_tokens=0`；`stream_action=continuation_recovery` 只改变流式命中后的处理动作，不改变规则命中口径
 - 实际拦截占比 = 实际拦截总数 / 被检查响应总数
 - 关闭某一类拦截后，该类命中仍会继续计入规则命中与模型一致性观测，但不会计入实际拦截
-- `guard_retry_attempts` 对命中当前拦截规则且会被实际拦截的响应生效；开启 `retry_upstream_capacity_errors` 后，也对指定上游 capacity 错误生效
+- `guard_retry_attempts` 是“命中后最大内部尝试次数”；普通内部重试、`stream_action=continuation_recovery` 的 Responses 流式续写恢复、以及开启 `retry_upstream_capacity_errors` 后的指定上游 capacity 错误内重试都共用这个次数
 - `retry_upstream_capacity_errors` 只匹配 `Selected model is at capacity. Please try a different model.`，普通 `429` / `502` 等 HTTP 错误如果没有命中该特征，会继续原样透传
 - 网关内部重试的每次上游尝试都会计入代理请求总数；每次拿到并检查的响应都会计入被检查响应总数；命中当前拦截规则会计入当前规则命中总数，被吞掉重试或最终拦截会计入实际拦截总数
 - 命中日志里的 `action=internal_retry remaining=N` 表示本次命中只在网关内部吞掉并继续重试，没有把失败状态返回给 Codex；`action=return_status_502` 才表示已经达到重试上限或配置为 `0`，本次会对 Codex 返回拦截状态
@@ -326,12 +329,21 @@ macOS / Linux: ~/.codex-retry-gateway/config/config.json
 
 - `reasoning_equals`
   - 默认 `[516, 1034, 1552]`
+  - 仅在 `reasoning_match_mode=manual` 时作为命中列表；公式模式下只保留为回退/参考列表
+- `reasoning_match_mode`
+  - 默认 `formula_518n_minus_2`
+  - `manual`：手动填写 `reasoning_equals`
+  - `formula_518n_minus_2`：按公式匹配 `reasoning_tokens >= 516 && (reasoning_tokens + 2) % 518 === 0`，会覆盖 `516、1034、1552、2070...`，不是只匹配默认前三个值
 - `intercept_rule_mode`
   - 默认并推荐 `reasoning_tokens`
   - `reasoning_tokens`：稳定主规则，命中 `reasoning_equals` 即视为当前规则命中；真实使用中 516 拦截仍可能直接影响任务正确性
   - `final_answer_only_high_xhigh`：实验收窄规则，仅当 `reasoning.effort` 为 `high` / `xhigh`，响应结构是 `final answer only`、未观察到 commentary、无 tool call、无 reasoning item，且 `reasoning_tokens` 为 `null/缺失` 或非 0 时命中；普通 `reasoning_tokens=0` 只观察落盘，不触发该实验规则
   - 两个模式二选一；效果不确定或以任务正确性优先时，使用 `reasoning_tokens`
   - `request_kind=context_compaction` 只有在 `reasoning_tokens=0` 时豁免；`516/1034/1552` 等命中值仍按当前规则处理，并受 `guard_retry_attempts` 控制
+- `continuation_marker_text`
+  - 默认 `Continue thinking...`
+  - `stream_action=continuation_recovery` 第二轮请求追加的 `phase=commentary` 标记文本
+  - 当前管理页不单独提供输入框；可通过配置文件或配置 API 保存
 - `intercept_streaming`
   - 默认 `true`
   - 控制流式响应命中当前拦截规则后是否真正拦截
@@ -344,10 +356,10 @@ macOS / Linux: ~/.codex-retry-gateway/config/config.json
 - `non_stream_status_code`
   - 默认 `502`
 - `guard_retry_attempts`
-  - 默认 `3`
-  - 命中当前拦截规则后，网关内部额外重试上游的次数
-  - 开启 `retry_upstream_capacity_errors` 后，也用于上游 capacity 错误的内部重试次数
-  - `0` 表示不做网关内部重试
+  - 默认 `5`
+  - 表示命中后的最大内部尝试次数，不只用于普通重试
+  - 普通内部重试、Responses 流式续写恢复、以及开启 `retry_upstream_capacity_errors` 后的上游 capacity 错误内重试都共用这里
+  - `0` 表示不做内部尝试，直接按最终动作处理
   - 无上限，管理页保存后立即生效
 - `retry_upstream_capacity_errors`
   - 默认 `true`
@@ -355,9 +367,10 @@ macOS / Linux: ~/.codex-retry-gateway/config/config.json
   - 关闭后，上述 capacity 错误也按旧行为原样透传
   - 普通 `429` / `502` 不会因为这个开关被泛化重试
 - `stream_action`
-  - 默认 `strict_502`
-  - `strict_502`：先缓存整个流，命中当前拦截规则时统一返回 `502`
+  - 默认 `continuation_recovery`
+  - `strict_502`：标准保护；命中当前拦截规则后在网关内重试，耗尽 `guard_retry_attempts` 后返回 `502`
   - `disconnect`：兼容旧行为；若命中发生在已透传 chunk 之后，则直接断开连接
+  - `continuation_recovery`：命中当前拦截规则且可拿到 encrypted reasoning item 时，对 Responses 流式请求优先尝试内部续写；续写次数同样受 `guard_retry_attempts` 控制，不限定特定 token 公式
 - `log_match`
   - 是否记录命中日志
 - `active_probe.enabled`
@@ -386,7 +399,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-gateway.ps1 -RestartIfR
 bash ./scripts/start-gateway.sh --restart-if-running
 ```
 
-如果你已经打开管理页，优先直接在页面里改，通常不需要手改 `config.json`。
+如果你已经打开管理页，优先直接在页面里改；少数未暴露成页面输入项的字段，例如 `continuation_marker_text`，再通过 `config.json` 或配置 API 调整。
 
 ## 并发与日志写入
 

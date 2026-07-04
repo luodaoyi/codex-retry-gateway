@@ -89,14 +89,19 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
 - 按统一 Profile 运行 reasoning 特征分析，展示 `analysis_value`、`conclusion`、字段覆盖率、候选摘要和基线对比
 - 导出 reasoning 行为统计 JSON / CSV
 - 启动历史导入预检并分析后台任务，先判断历史数据是否具备 reasoning 行为特征分析价值
-- 热更新 `intercept_rule_mode` / `reasoning_equals` / `endpoints` / `non_stream_status_code` / `guard_retry_attempts` / `retry_upstream_capacity_errors` / `log_match`
+- 管理页热更新 `intercept_rule_mode` / `reasoning_match_mode` / `reasoning_equals` / `stream_action` / `endpoints` / `non_stream_status_code` / `guard_retry_attempts` / `retry_upstream_capacity_errors` / `log_match`
+- `continuation_marker_text` 支持配置/API 保存，当前管理页不单独提供输入框
 - 一键恢复 Codex 原设置并关闭 gateway
 
 拦截规则模式说明：
 
-- `reasoning_tokens` 是默认并推荐的稳定主规则，命中 `reasoning_equals` 即视为当前规则命中；真实使用中 516 拦截仍可能直接影响任务正确性。
+- `reasoning_tokens` 是默认并推荐的稳定主规则；默认 `reasoning_match_mode=formula_518n_minus_2`，会匹配 `516、1034、1552、2070...` 等所有符合公式的值。
+- `reasoning_match_mode=manual` 会切回手动 `reasoning_equals` 列表；公式模式下 `reasoning_equals` 只保留为回退/参考列表。
 - `final_answer_only_high_xhigh` 是实验收窄规则，仅在 `reasoning.effort=high/xhigh` 下拦截 `final answer only + commentary not observed + no tool call + no reasoning item`，且 `reasoning_tokens=null/缺失` 或非 0 的响应结构；普通 `reasoning_tokens=0` 只观察落盘，不触发该实验规则。它可能漏掉仍影响正确性的 516 样本，不建议替代默认 516/1034/1552 主拦截。
-- 两个模式二选一；`intercept_streaming` / `intercept_non_streaming` 只控制命中当前规则后是否真正拦截。
+- 两个规则模式二选一；`intercept_streaming` / `intercept_non_streaming` 只控制命中当前规则后是否真正拦截。
+- `stream_action=continuation_recovery` 是流式命中动作，不是拦截规则；命中当前规则后，仅对 `/responses` 与 `/v1/responses` 的流式响应尝试内部续写，第二轮请求会携带上一轮 encrypted reasoning item 和 `phase=commentary` 标记，不限定特定 token 公式。
+- `guard_retry_attempts` 默认 `5`，是命中后最大内部尝试次数；普通内部重试、`stream_action=continuation_recovery` 的 Responses 流式续写恢复、以及开启 capacity 选项后的上游 capacity 错误内重试都共用这里。
+- `stream_action=continuation_recovery` 复用 `guard_retry_attempts` 控制最大续写轮数；无法构造续写请求时回到既有内部重试 / 拦截逻辑。
 - `remote_compaction_v2` 只是 beta feature 标记，不单独识别为压缩请求；只有显式 `context_compaction` 且 `reasoning_tokens=0` 的响应会豁免，`516/1034/1552` 等命中值仍按当前规则处理并受 `guard_retry_attempts` 控制。
 - `retry_upstream_capacity_errors` 默认开启，只匹配上游 `Selected model is at capacity. Please try a different model.`；命中后按 `guard_retry_attempts` 在网关内部重试，普通 `429` / `502` 仍原样透传。
 

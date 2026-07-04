@@ -15,6 +15,12 @@ export const DEFAULT_REQUEST_BODY_LIMIT_BYTES = 100 * 1024 * 1024;
 export const LEGACY_REQUEST_BODY_LIMIT_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_INTERCEPT_RULE_MODE = "reasoning_tokens";
 export const FINAL_ONLY_HIGH_XHIGH_INTERCEPT_RULE_MODE = "final_answer_only_high_xhigh";
+export const FORMULA_518N_MINUS_2_REASONING_MATCH_MODE = "formula_518n_minus_2";
+export const DEFAULT_REASONING_MATCH_MODE = FORMULA_518N_MINUS_2_REASONING_MATCH_MODE;
+export const DEFAULT_CONTINUATION_MARKER_TEXT = "Continue thinking...";
+export const CONTINUATION_RECOVERY_STREAM_ACTION = "continuation_recovery";
+export const DEFAULT_STREAM_ACTION = CONTINUATION_RECOVERY_STREAM_ACTION;
+export const DEFAULT_GUARD_RETRY_ATTEMPTS = 5;
 
 function escapeRegExp(value) {
   return `${value}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -25,6 +31,24 @@ function normalizeInterceptRuleMode(value) {
   return normalized === FINAL_ONLY_HIGH_XHIGH_INTERCEPT_RULE_MODE
     ? FINAL_ONLY_HIGH_XHIGH_INTERCEPT_RULE_MODE
     : DEFAULT_INTERCEPT_RULE_MODE;
+}
+
+function normalizeReasoningMatchMode(value) {
+  const normalized = `${value || ""}`.trim().toLowerCase();
+  return normalized === FORMULA_518N_MINUS_2_REASONING_MATCH_MODE
+    ? FORMULA_518N_MINUS_2_REASONING_MATCH_MODE
+    : DEFAULT_REASONING_MATCH_MODE;
+}
+
+function normalizeContinuationMarkerText(value) {
+  if (typeof value !== "string") {
+    return DEFAULT_CONTINUATION_MARKER_TEXT;
+  }
+  return value.trim() ? value : DEFAULT_CONTINUATION_MARKER_TEXT;
+}
+
+function isLegacyContinuationRuleMode(value) {
+  return `${value || ""}`.trim().toLowerCase() === CONTINUATION_RECOVERY_STREAM_ACTION;
 }
 
 export function parseOptions(argv, { booleanFlags = [] } = {}) {
@@ -205,7 +229,7 @@ export function normalizeStringArray(values, fallback = []) {
   return normalized.length > 0 ? [...new Set(normalized)] : [...fallback];
 }
 
-function normalizeGuardRetryAttempts(value, fallback = 3) {
+function normalizeGuardRetryAttempts(value, fallback = DEFAULT_GUARD_RETRY_ATTEMPTS) {
   if (value === undefined || value === null || `${value}`.trim() === "") {
     return fallback;
   }
@@ -432,13 +456,19 @@ export async function installForCurrentProvider({
     }
   }
 
+  const legacyContinuationRuleMode = isLegacyContinuationRuleMode(
+    existingGatewayConfig?.intercept_rule_mode,
+  );
   const gatewayConfig = {
     listen_host: listenHost,
     listen_port: listenPort,
     upstream_base_url: originalBaseUrl,
     request_body_limit_bytes: normalizeRequestBodyLimitBytes(existingGatewayConfig?.request_body_limit_bytes),
     endpoints: mergedEndpoints,
-    intercept_rule_mode: normalizeInterceptRuleMode(existingGatewayConfig?.intercept_rule_mode),
+    intercept_rule_mode: legacyContinuationRuleMode
+      ? DEFAULT_INTERCEPT_RULE_MODE
+      : normalizeInterceptRuleMode(existingGatewayConfig?.intercept_rule_mode),
+    reasoning_match_mode: normalizeReasoningMatchMode(existingGatewayConfig?.reasoning_match_mode),
     reasoning_equals: normalizeIntArray(existingGatewayConfig?.reasoning_equals, [516, 1034, 1552]),
     intercept_streaming:
       existingGatewayConfig?.intercept_streaming === undefined ? true : Boolean(existingGatewayConfig.intercept_streaming),
@@ -450,9 +480,14 @@ export async function installForCurrentProvider({
       existingGatewayConfig?.non_stream_status_code === undefined || existingGatewayConfig?.non_stream_status_code === null
         ? 502
         : Number.parseInt(`${existingGatewayConfig.non_stream_status_code}`, 10),
-    guard_retry_attempts: normalizeGuardRetryAttempts(existingGatewayConfig?.guard_retry_attempts, 3),
+    guard_retry_attempts: normalizeGuardRetryAttempts(existingGatewayConfig?.guard_retry_attempts),
     retry_upstream_capacity_errors: existingGatewayConfig?.retry_upstream_capacity_errors !== false,
-    stream_action: existingGatewayConfig?.stream_action || "strict_502",
+    stream_action: legacyContinuationRuleMode
+      ? CONTINUATION_RECOVERY_STREAM_ACTION
+      : existingGatewayConfig?.stream_action || DEFAULT_STREAM_ACTION,
+    continuation_marker_text: normalizeContinuationMarkerText(
+      existingGatewayConfig?.continuation_marker_text,
+    ),
     log_match: existingGatewayConfig?.log_match === undefined ? true : Boolean(existingGatewayConfig.log_match),
     health_path: existingGatewayConfig?.health_path || DEFAULT_HEALTH_PATH,
   };
@@ -594,8 +629,22 @@ export async function launchUi({
       if (!existingGatewayConfig.health_path) {
         existingGatewayConfig.health_path = DEFAULT_HEALTH_PATH;
       }
+      const legacyContinuationRuleMode = isLegacyContinuationRuleMode(
+        existingGatewayConfig.intercept_rule_mode,
+      );
+      if (legacyContinuationRuleMode) {
+        existingGatewayConfig.stream_action = CONTINUATION_RECOVERY_STREAM_ACTION;
+      } else if (!existingGatewayConfig.stream_action) {
+        existingGatewayConfig.stream_action = DEFAULT_STREAM_ACTION;
+      }
+      existingGatewayConfig.continuation_marker_text = normalizeContinuationMarkerText(
+        existingGatewayConfig.continuation_marker_text,
+      );
       existingGatewayConfig.intercept_rule_mode = normalizeInterceptRuleMode(
         existingGatewayConfig.intercept_rule_mode,
+      );
+      existingGatewayConfig.reasoning_match_mode = normalizeReasoningMatchMode(
+        existingGatewayConfig.reasoning_match_mode,
       );
       if (existingGatewayConfig.intercept_streaming === undefined) {
         existingGatewayConfig.intercept_streaming = true;
@@ -604,7 +653,7 @@ export async function launchUi({
         existingGatewayConfig.intercept_non_streaming = true;
       }
       if (existingGatewayConfig.guard_retry_attempts === undefined || existingGatewayConfig.guard_retry_attempts === null) {
-        existingGatewayConfig.guard_retry_attempts = 3;
+        existingGatewayConfig.guard_retry_attempts = DEFAULT_GUARD_RETRY_ATTEMPTS;
       }
       if (
         existingGatewayConfig.retry_upstream_capacity_errors === undefined ||

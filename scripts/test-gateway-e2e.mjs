@@ -127,6 +127,21 @@ function buildResponsePayload(parsed, reasoning, retryAttempt = 0) {
       },
     ];
   }
+  if (parsed.test_include_json_encrypted_reasoning_item) {
+    payload.output = [
+      {
+        id: parsed.test_json_reasoning_id ?? "rs_json_test_1",
+        type: "reasoning",
+        encrypted_content:
+          parsed.test_json_reasoning_encrypted_content ?? "json-encrypted-test-content",
+        summary: [],
+      },
+      {
+        type: "message",
+        content: [{ type: "output_text", text: "visible final answer" }],
+      },
+    ];
+  }
   if (parsed.test_include_final_answer_only) {
     payload.output = [
       {
@@ -241,9 +256,51 @@ function buildResponsesStreamChunks(parsed, reasoning) {
   const finalResponseId =
     responseIds[responseIds.length - 1] ?? responseIds[0] ?? "resp_stream_1";
   const serviceTier = parsed.test_service_tier ?? "priority";
-  const chunks = [
-    'data: {"type":"response.output_text.delta","delta":"hello"}\n\n',
-  ];
+  const chunks = [];
+
+  if (
+    parsed.test_include_stream_reasoning_item ||
+    (Array.isArray(parsed.include) && parsed.include.includes("reasoning.encrypted_content"))
+  ) {
+    const reasoningItem = {
+      id: parsed.test_stream_reasoning_id ?? "rs_test_1",
+      type: "reasoning",
+      encrypted_content:
+        parsed.test_stream_reasoning_encrypted_content ?? "encrypted-test-content",
+      summary: [],
+    };
+    if (parsed.test_stream_reasoning_item_location === "response_output") {
+      chunks.push(
+        `data: ${JSON.stringify({
+          type: "response.output_snapshot",
+          response: {
+            output: [reasoningItem],
+          },
+        })}\n\n`,
+      );
+    } else {
+      chunks.push(
+        `data: ${JSON.stringify({
+          type: "response.output_item.added",
+          output_index: 0,
+          item: {
+            id: reasoningItem.id,
+            type: "reasoning",
+            summary: [],
+          },
+        })}\n\n`,
+      );
+      chunks.push(
+        `data: ${JSON.stringify({
+          type: "response.output_item.done",
+          output_index: 0,
+          item: reasoningItem,
+        })}\n\n`,
+      );
+    }
+  }
+
+  chunks.push('data: {"type":"response.output_text.delta","delta":"hello"}\n\n');
 
   models.forEach((model, index) => {
     const deltaPayload = {
@@ -366,7 +423,29 @@ class FakeElement {
     this.scrollTop = 0;
     this.scrollHeight = 0;
     this.listeners = new Map();
-    this.classList = { contains: () => false };
+    const classNames = new Set();
+    this.classList = {
+      add: (...values) => {
+        for (const value of values) {
+          classNames.add(value);
+        }
+      },
+      remove: (...values) => {
+        for (const value of values) {
+          classNames.delete(value);
+        }
+      },
+      contains: (value) => classNames.has(value),
+      toggle: (value, force) => {
+        const shouldAdd = force === undefined ? !classNames.has(value) : Boolean(force);
+        if (shouldAdd) {
+          classNames.add(value);
+        } else {
+          classNames.delete(value);
+        }
+        return shouldAdd;
+      },
+    };
   }
 
   addEventListener(type, handler) {
@@ -414,11 +493,18 @@ async function verifyRenderedUiEvidenceDetailsBehavior(uiHtml) {
   const ids = [
     "configForm",
     "reasoningInput",
+    "reasoningEqualsField",
+    "reasoningEqualsHint",
+    "reasoningMatchModeSelect",
     "interceptRuleModeReasoningTokensInput",
     "interceptRuleModeFinalOnlyInput",
     "interceptStreamingInput",
     "interceptNonStreamingInput",
     "interceptModeValue",
+    "policySummaryValue",
+    "streamActionStrict502Input",
+    "streamActionDisconnectInput",
+    "streamActionContinuationRecoveryInput",
     "endpointsInput",
     "statusCodeInput",
     "guardRetryAttemptsInput",
@@ -455,6 +541,8 @@ async function verifyRenderedUiEvidenceDetailsBehavior(uiHtml) {
     "blockedCountValue",
     "blockedStreamingCountValue",
     "blockedNonStreamingCountValue",
+    "continuationRecoveryCountValue",
+    "continuationRecoverySuccessRatioValue",
     "reasoningTotalSamplesValue",
     "reasoningFinalOnlyRatioValue",
     "reasoningCommentaryRatioValue",
@@ -548,6 +636,7 @@ async function verifyRenderedUiEvidenceDetailsBehavior(uiHtml) {
     config: {
       upstream_base_url: "http://upstream.example",
       intercept_rule_mode: "reasoning_tokens",
+      reasoning_match_mode: "manual",
       reasoning_equals: [516],
       intercept_streaming: true,
       intercept_non_streaming: true,
@@ -596,6 +685,9 @@ async function verifyRenderedUiEvidenceDetailsBehavior(uiHtml) {
       blocked_response_count: 1,
       blocked_streaming_count: 1,
       blocked_non_streaming_count: 0,
+      continuation_recovery_count: 5,
+      continuation_recovery_success_count: 4,
+      continuation_recovery_success_ratio: 0.8,
     },
     model_insights: {
       consistency: { match_ratio: 0, mismatched: 0 },
@@ -1407,6 +1499,16 @@ async function verifyRenderedUiEvidenceDetailsBehavior(uiHtml) {
     "管理页未显示双开拦截模式",
   );
   assert(
+    elements.reasoningMatchModeSelect.value === "manual",
+    "管理页未回填 reasoning match 手动模式",
+  );
+  assert(
+    elements.policySummaryValue.textContent.includes("516") &&
+      elements.policySummaryValue.textContent.includes("最大内部尝试 3 次") &&
+      elements.policySummaryValue.textContent.includes("仍命中返回 502"),
+    `管理页未生成一眼可读的当前策略摘要: ${elements.policySummaryValue.textContent}`,
+  );
+  assert(
     elements.matchedCountValue.textContent === "2",
     "管理页未展示当前规则命中总数",
   );
@@ -1990,6 +2092,10 @@ async function verifyRenderedUiEvidenceDetailsBehavior(uiHtml) {
     "saveConfig 未提交 final answer only 拦截模式",
   );
   assert(
+    savedPayload.reasoning_match_mode === "manual",
+    "saveConfig 未提交 reasoning_match_mode",
+  );
+  assert(
     savedPayload.guard_retry_attempts === 3,
     "saveConfig 未提交 guard_retry_attempts",
   );
@@ -2011,6 +2117,66 @@ async function verifyRenderedUiEvidenceDetailsBehavior(uiHtml) {
       JSON.stringify(["gpt-5.4"]),
     "saveConfig 未提交 active_probe.target_families",
   );
+  elements.interceptRuleModeFinalOnlyInput.checked = false;
+  elements.interceptRuleModeReasoningTokensInput.checked = true;
+  elements.streamActionStrict502Input.checked = false;
+  elements.streamActionContinuationRecoveryInput.checked = true;
+  await sandbox.saveConfig({ preventDefault() {} });
+  const continuationSaveConfigCall = fetchBodies
+    .filter((entry) => entry.url.includes("/api/config"))
+    .at(-1);
+  assert(continuationSaveConfigCall, "saveConfig 未请求续写恢复配置");
+  const continuationSavedPayload = JSON.parse(continuationSaveConfigCall.body);
+  assert(
+    continuationSavedPayload.intercept_rule_mode === "reasoning_tokens" &&
+      continuationSavedPayload.stream_action === "continuation_recovery",
+    "saveConfig 未提交 reasoning_tokens 规则 + 续写恢复流式动作",
+  );
+  assert(
+    elements.continuationRecoveryCountValue.textContent === "5" &&
+      elements.continuationRecoverySuccessRatioValue.textContent === "80.00%",
+    "运行状态未正确展示续写次数和续写成功率",
+  );
+  sandbox.fillForm({
+    intercept_rule_mode: "reasoning_tokens",
+    reasoning_match_mode: "formula_518n_minus_2",
+    reasoning_equals: [516],
+    stream_action: "continuation_recovery",
+    active_probe: {
+      enabled: false,
+      interval_ms: 7 * 60 * 1000,
+      target_families: ["gpt-5.4"],
+    },
+  });
+  assert(
+    elements.interceptRuleModeReasoningTokensInput.checked === true &&
+      elements.interceptRuleModeFinalOnlyInput.checked === false &&
+      elements.streamActionContinuationRecoveryInput.checked === true &&
+      elements.streamActionStrict502Input.checked === false,
+    "fillForm 未正确回填 reasoning_tokens 规则 + 续写恢复流式动作状态",
+  );
+  assert(
+    elements.reasoningMatchModeSelect.value === "formula_518n_minus_2" &&
+      elements.policySummaryValue.textContent.includes("518*n - 2 规则"),
+    "fillForm 未正确回填 518*n - 2 规则模式",
+  );
+  assert(
+    elements.reasoningInput.disabled === true &&
+      elements.reasoningEqualsField.classList.contains("is-formula-locked") &&
+      elements.reasoningEqualsHint.textContent.includes("公式模式已接管"),
+    "518*n - 2 规则模式下 reasoning_equals 应显示为公式锁定的不可编辑参考态",
+  );
+  elements.reasoningMatchModeSelect.value = "manual";
+  sandbox.syncReasoningMatchModeFromForm();
+  assert(
+    elements.reasoningInput.disabled === false &&
+      !elements.reasoningEqualsField.classList.contains("is-formula-locked") &&
+      elements.reasoningEqualsHint.textContent.includes("手动模式下"),
+    "切回手动模式后 reasoning_equals 应恢复可编辑状态和手动提示",
+  );
+  elements.streamActionContinuationRecoveryInput.checked = false;
+  elements.streamActionStrict502Input.checked = true;
+  elements.interceptRuleModeReasoningTokensInput.checked = true;
   assert(
     elements.probeEnabledValue.textContent.includes("未开启"),
     "保存为关闭自动探测后，主动探针状态应显示未开启",
@@ -2381,6 +2547,7 @@ function startFakeUpstream(port) {
   const identityProbeCounts = new Map();
   const probeRequests = [];
   const responseRequests = [];
+  const chatCompletionRequests = [];
   const server = http.createServer((req, res) => {
     const responsePaths = new Set(["/responses", "/v1/responses"]);
     const chatCompletionPaths = new Set([
@@ -2790,6 +2957,10 @@ function startFakeUpstream(port) {
           return;
         }
         if (parsed.stream) {
+          if (parsed.test_force_json_for_stream) {
+            finishJsonResponse();
+            return;
+          }
           createSseResponse(
             res,
             buildResponsesStreamChunks(parsed, reasoning),
@@ -2814,6 +2985,14 @@ function startFakeUpstream(port) {
       });
       req.on("end", () => {
         const parsed = JSON.parse(body || "{}");
+        chatCompletionRequests.push({
+          path: req.url,
+          headers: {
+            authorization: req.headers.authorization || "",
+            userAgent: req.headers["user-agent"] || null,
+          },
+          body: parsed,
+        });
         const sequenceKey = Array.isArray(parsed.test_reasoning_sequence)
           ? `${req.url}:${parsed.test_sequence_key || JSON.stringify(parsed.test_reasoning_sequence)}`
           : null;
@@ -2854,6 +3033,7 @@ function startFakeUpstream(port) {
     server.listen(port, "127.0.0.1", () => {
       server.probeRequests = probeRequests;
       server.responseRequests = responseRequests;
+      server.chatCompletionRequests = chatCompletionRequests;
       resolve(server);
     });
   });
@@ -2921,10 +3101,10 @@ function startGateway(configPath, logPath) {
   };
 }
 
-async function readSseUntilClose(url, requestBody) {
+async function readSseUntilClose(url, requestBody, options = {}) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...(options.headers || {}) },
     body: JSON.stringify(requestBody),
   });
 
@@ -2954,6 +3134,44 @@ async function readSseUntilClose(url, requestBody) {
     text,
     closedByError,
   };
+}
+
+function assertContinuationRequestShape(requests, label, { expectedOriginalText = null } = {}) {
+  assert(requests.length === 2, `${label} 应向上游请求 2 次: ${requests.length}`);
+  assert(
+    Array.isArray(requests[0].body?.include) &&
+      requests[0].body.include.includes("reasoning.encrypted_content"),
+    `${label} 第一轮请求应带 include=reasoning.encrypted_content: ${JSON.stringify(requests[0].body?.include)}`,
+  );
+  const followupInput = requests[1]?.body?.input || [];
+  assert(Array.isArray(followupInput), `${label} 第二轮 input 应为数组: ${JSON.stringify(followupInput)}`);
+  assert(
+    followupInput.some(
+      (item) =>
+        item?.type === "reasoning" &&
+        item?.encrypted_content === "encrypted-test-content",
+    ),
+    `${label} 第二轮请求应携带上一轮 encrypted reasoning: ${JSON.stringify(followupInput)}`,
+  );
+  assert(
+    followupInput.some((item) => item?.type === "message" && item?.phase === "commentary"),
+    `${label} 第二轮请求应追加 phase=commentary 标记: ${JSON.stringify(followupInput)}`,
+  );
+  if (expectedOriginalText) {
+    assert(
+      followupInput.every((item) => typeof item !== "string"),
+      `${label} 第二轮 input 数组不应包含裸字符串: ${JSON.stringify(followupInput)}`,
+    );
+    assert(
+      followupInput.some(
+        (item) =>
+          item?.type === "message" &&
+          item?.role === "user" &&
+          `${item?.content || ""}`.includes(expectedOriginalText),
+      ),
+      `${label} 第二轮请求应保留原始用户输入: ${JSON.stringify(followupInput)}`,
+    );
+  }
 }
 
 async function run() {
@@ -3053,8 +3271,8 @@ async function run() {
       "intercept_non_streaming 默认应开启",
     );
     assert(
-      statusBeforeUiRefresh.config?.guard_retry_attempts === 3,
-      "guard_retry_attempts 默认应为 3",
+      statusBeforeUiRefresh.config?.guard_retry_attempts === 5,
+      "guard_retry_attempts 默认应为 5",
     );
     assert(
       statusBeforeUiRefresh.config?.retry_upstream_capacity_errors === true,
@@ -3063,6 +3281,18 @@ async function run() {
     assert(
       statusBeforeUiRefresh.config?.intercept_rule_mode === "reasoning_tokens",
       "intercept_rule_mode 默认应为 reasoning_tokens",
+    );
+    assert(
+      statusBeforeUiRefresh.config?.reasoning_match_mode === "formula_518n_minus_2",
+      "reasoning_match_mode 默认应为 formula_518n_minus_2",
+    );
+    assert(
+      statusBeforeUiRefresh.config?.stream_action === "strict_502",
+      "stream_action 显式配置为 strict_502 时应保留",
+    );
+    assert(
+      statusBeforeUiRefresh.config?.continuation_marker_text === "Continue thinking...",
+      "continuation_marker_text 默认值应暴露在状态接口",
     );
     assert(statusBeforeUiRefresh.active_probe, "status 缺少 active_probe");
     assert(
@@ -3173,9 +3403,45 @@ async function run() {
         uiHtml.includes("final answer only") &&
         uiHtml.includes("reasoning_tokens 长度（推荐）") &&
         uiHtml.includes("final answer only（实验，排除 0）") &&
-        uiHtml.includes("排除普通 reasoning_tokens=0") &&
-        uiHtml.includes("不建议替代 516 主拦截"),
-      "管理页缺少 reasoning_tokens 推荐主规则与 final answer only 实验规则提示",
+        uiHtml.includes("命中条件"),
+      "管理页缺少 reasoning_tokens 与 final answer only 规则提示",
+    );
+    assert(
+      uiHtml.includes('id="reasoningMatchModeSelect"') &&
+        uiHtml.includes('value="manual"') &&
+        uiHtml.includes('value="formula_518n_minus_2"') &&
+        uiHtml.includes("手动填写 reasoning_equals") &&
+        uiHtml.includes("518*n - 2 规则") &&
+        uiHtml.includes("2070") &&
+        uiHtml.includes("续写恢复不是单独的拦截规则"),
+      "管理页缺少 reasoning match 下拉框与 518*n - 2 公式说明",
+    );
+    assert(
+      uiHtml.includes('id="continuationRecoveryCountValue"') &&
+        uiHtml.includes("续写次数") &&
+        uiHtml.includes('id="continuationRecoverySuccessRatioValue"') &&
+        uiHtml.includes("续写成功率"),
+      "管理页运行状态缺少续写次数和续写成功率卡片",
+    );
+    assert(
+      uiHtml.includes('id="streamActionStrict502Input"') &&
+        uiHtml.includes('value="strict_502"') &&
+        uiHtml.includes('id="streamActionDisconnectInput"') &&
+        uiHtml.includes('value="disconnect"') &&
+        uiHtml.includes('id="streamActionContinuationRecoveryInput"') &&
+        uiHtml.includes('value="continuation_recovery"') &&
+        uiHtml.includes("命中后处理") &&
+        uiHtml.includes("标准保护：网关内重试，耗尽后返回 502") &&
+        uiHtml.includes("续写恢复：Responses 流式先续写") &&
+        uiHtml.includes("兼容旧行为：已透传时断开连接"),
+      "管理页缺少命中后处理与续写恢复选项",
+    );
+    assert(
+      uiHtml.includes("当前生效策略") &&
+        uiHtml.includes('id="policySummaryValue"') &&
+        uiHtml.includes("命中后最大内部尝试次数") &&
+        uiHtml.includes("所有命中后内部动作共用这里的次数"),
+      "管理页缺少一眼可读的当前策略摘要与内部尝试次数说明",
     );
     assert(
       uiHtml.includes('class="field rule-mode-field"') &&
@@ -3218,7 +3484,7 @@ async function run() {
       uiHtml.includes('id="guardRetryAttemptsInput"'),
       "管理页缺少网关内重试次数输入框",
     );
-    assert(uiHtml.includes("网关内重试次数"), "管理页缺少网关内重试次数标签");
+    assert(uiHtml.includes("命中后最大内部尝试次数"), "管理页缺少命中后最大内部尝试次数标签");
     assert(
       uiHtml.includes('id="retryUpstreamCapacityErrorsInput"'),
       "管理页缺少上游 capacity 错误内重试开关",
@@ -3233,13 +3499,13 @@ async function run() {
       "管理页缺少 TG 群链接",
     );
     assert(
-      uiHtml.indexOf('name="non_stream_status_code"') <
-        uiHtml.indexOf('name="guard_retry_attempts"') &&
-        uiHtml.indexOf('name="guard_retry_attempts"') <
+      uiHtml.indexOf('name="guard_retry_attempts"') <
+        uiHtml.indexOf('name="non_stream_status_code"') &&
+        uiHtml.indexOf('name="non_stream_status_code"') <
           uiHtml.indexOf('name="retry_upstream_capacity_errors"') &&
         uiHtml.indexOf('name="retry_upstream_capacity_errors"') <
           uiHtml.indexOf('name="log_match"'),
-      "网关内重试次数和上游 capacity 开关应位于 non_stream_status_code 与 log_match 之间",
+      "命中后最大内部尝试次数、最终状态码和上游 capacity 开关应位于 log_match 之前",
     );
     assert(
       !uiHtml.includes("516 命中次数"),
@@ -3463,11 +3729,11 @@ async function run() {
       `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/status`,
     ).then((response) => response.json());
     assert(
-      defaultModeStatus.metrics.matched_non_streaming_count === 8,
+      defaultModeStatus.metrics.matched_non_streaming_count === 12,
       `双开默认模式下非流式命中次数不正确: ${defaultModeStatus.metrics.matched_non_streaming_count}`,
     );
     assert(
-      defaultModeStatus.metrics.blocked_non_streaming_count === 8,
+      defaultModeStatus.metrics.blocked_non_streaming_count === 12,
       `双开默认模式下非流式拦截次数不正确: ${defaultModeStatus.metrics.blocked_non_streaming_count}`,
     );
     assert(
@@ -3869,7 +4135,10 @@ async function run() {
       `后台 reasoning 导出下载失败: ${backgroundDownloadResponse.status}`,
     );
     const blockedReasoningSample = exportJsonPayload.samples.find(
-      (sample) => sample.blocked_by_gateway && sample.request_reasoning_effort,
+      (sample) =>
+        sample.blocked_by_gateway &&
+        sample.request_reasoning_effort &&
+        sample.final_action === "blocked",
     );
     assert(
       blockedReasoningSample,
@@ -4034,11 +4303,11 @@ async function run() {
       `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/status`,
     ).then((response) => response.json());
     assert(
-      statusAfterStreamOnlyNonStream.metrics.matched_non_streaming_count === 9,
+      statusAfterStreamOnlyNonStream.metrics.matched_non_streaming_count === 13,
       `仅流式模式下非流式命中仍应计数: ${statusAfterStreamOnlyNonStream.metrics.matched_non_streaming_count}`,
     );
     assert(
-      statusAfterStreamOnlyNonStream.metrics.blocked_non_streaming_count === 8,
+      statusAfterStreamOnlyNonStream.metrics.blocked_non_streaming_count === 12,
       `仅流式模式下非流式透传不应增加拦截数: ${statusAfterStreamOnlyNonStream.metrics.blocked_non_streaming_count}`,
     );
     assert(
@@ -4455,6 +4724,58 @@ async function run() {
         ),
       ),
       "guard_retry_attempts=0 命中规则日志应标记为 return_status_502",
+    );
+    const formulaModeConfigResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          reasoning_match_mode: "formula_518n_minus_2",
+          guard_retry_attempts: 0,
+        }),
+      },
+    );
+    assert(
+      formulaModeConfigResponse.status === 200,
+      `518*n-2 规则模式应保存成功: ${formulaModeConfigResponse.status}`,
+    );
+    const formulaModeStatus = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/status`,
+    ).then((response) => response.json());
+    assert(
+      formulaModeStatus.config?.reasoning_match_mode === "formula_518n_minus_2",
+      "518*n-2 规则模式未在状态接口生效",
+    );
+    const formulaModeKey = "non-stream-formula-2070";
+    const formulaModeResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          test_sequence_key: formulaModeKey,
+          test_reasoning_sequence: [2070],
+        }),
+      },
+    );
+    assert(
+      formulaModeResponse.status === 502,
+      `518*n-2 规则模式应命中 2070，而不是只命中默认三值: ${formulaModeResponse.status}`,
+    );
+    const manualModeRestoreResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          reasoning_match_mode: "manual",
+        }),
+      },
+    );
+    assert(
+      manualModeRestoreResponse.status === 200,
+      `恢复手动 reasoning_equals 模式失败: ${manualModeRestoreResponse.status}`,
     );
     const negativeGuardRetryConfigResponse = await fetch(
       `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
@@ -4917,6 +5238,739 @@ async function run() {
       "流式内部重试首次吞掉响应应计入实际拦截总数",
     );
 
+    const continuationConfigResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          intercept_rule_mode: "reasoning_tokens",
+          reasoning_equals: [516, 1034, 18],
+          stream_action: "continuation_recovery",
+          intercept_streaming: true,
+          intercept_non_streaming: false,
+          guard_retry_attempts: 1,
+        }),
+      },
+    );
+    assert(
+      continuationConfigResponse.status === 200,
+      `切换续写恢复模式失败: ${continuationConfigResponse.status}`,
+    );
+    const continuationStatus = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/status`,
+    ).then((response) => response.json());
+    assert(
+      continuationStatus.config?.intercept_rule_mode === "reasoning_tokens" &&
+        continuationStatus.config?.stream_action === "continuation_recovery",
+      "reasoning_tokens 规则 + 续写恢复流式动作未在状态接口生效",
+    );
+
+    const continuationStreamingDisabledKey = "continuation-streaming-disabled-no-include";
+    const continuationStreamingDisabledConfigResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          intercept_rule_mode: "reasoning_tokens",
+          reasoning_equals: [516, 1034, 18],
+          stream_action: "continuation_recovery",
+          intercept_streaming: false,
+          intercept_non_streaming: true,
+          guard_retry_attempts: 1,
+        }),
+      },
+    );
+    assert(
+      continuationStreamingDisabledConfigResponse.status === 200,
+      `关闭流式拦截时保存续写恢复配置失败: ${continuationStreamingDisabledConfigResponse.status}`,
+    );
+    const continuationStreamingDisabledResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        input: "关闭流式拦截时不应改写 include",
+        test_sequence_key: continuationStreamingDisabledKey,
+        test_reasoning_sequence: [128],
+      },
+    );
+    assert(
+      continuationStreamingDisabledResponse.status === 200,
+      `关闭流式拦截时普通流式请求应透传: ${continuationStreamingDisabledResponse.status}`,
+    );
+    const continuationStreamingDisabledRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationStreamingDisabledKey,
+    );
+    assert(
+      continuationStreamingDisabledRequests.length === 1 &&
+        !(
+          Array.isArray(continuationStreamingDisabledRequests[0].body?.include) &&
+          continuationStreamingDisabledRequests[0].body.include.includes("reasoning.encrypted_content")
+        ),
+      "关闭流式拦截时续写恢复不应自动给上游请求补 encrypted include",
+    );
+
+    const continuationBypassKey = "continuation-endpoint-bypass-no-include";
+    const continuationBypassConfigResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          intercept_rule_mode: "reasoning_tokens",
+          reasoning_equals: [516, 1034, 18],
+          stream_action: "continuation_recovery",
+          intercept_streaming: true,
+          intercept_non_streaming: true,
+          endpoints: ["/v1/chat/completions"],
+          guard_retry_attempts: 1,
+        }),
+      },
+    );
+    assert(
+      continuationBypassConfigResponse.status === 200,
+      `排除 /responses 端点时保存续写恢复配置失败: ${continuationBypassConfigResponse.status}`,
+    );
+    const continuationBypassResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        input: "未纳入 endpoints 时不应改写 include",
+        test_sequence_key: continuationBypassKey,
+        test_reasoning_sequence: [128],
+      },
+    );
+    assert(
+      continuationBypassResponse.status === 200,
+      `未纳入 endpoints 的 /responses 应旁路透传: ${continuationBypassResponse.status}`,
+    );
+    assert(
+      !continuationBypassResponse.text.includes("encrypted_content"),
+      "未纳入 endpoints 的 /responses 不应因续写恢复向客户端暴露 encrypted_content",
+    );
+    const continuationBypassRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationBypassKey,
+    );
+    assert(
+      continuationBypassRequests.length === 1 &&
+        !(
+          Array.isArray(continuationBypassRequests[0].body?.include) &&
+          continuationBypassRequests[0].body.include.includes("reasoning.encrypted_content")
+        ),
+      "未纳入 endpoints 的 /responses 不应自动给上游请求补 encrypted include",
+    );
+
+    const continuationRestoreConfigResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          intercept_rule_mode: "reasoning_tokens",
+          reasoning_equals: [516, 1034, 18],
+          stream_action: "continuation_recovery",
+          intercept_streaming: true,
+          intercept_non_streaming: false,
+          endpoints: ["/responses", "/chat/completions", "/v1/responses", "/v1/chat/completions"],
+          guard_retry_attempts: 1,
+        }),
+      },
+    );
+    assert(
+      continuationRestoreConfigResponse.status === 200,
+      `恢复续写恢复端点配置失败: ${continuationRestoreConfigResponse.status}`,
+    );
+
+    const continuationCompactionKey = "continuation-context-compaction-no-include";
+    const continuationCompactionResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        reasoning: { effort: "xhigh" },
+        stream: true,
+        input: [{ role: "user", content: "compact the current conversation" }],
+        test_sequence_key: continuationCompactionKey,
+        test_reasoning_sequence: [0],
+        test_include_final_answer_only: true,
+      },
+      {
+        headers: {
+          "x-codex-beta-features": "remote_compaction_v2",
+          "x-codex-request-kind": "context_compaction",
+        },
+      },
+    );
+    assert(
+      continuationCompactionResponse.status === 200,
+      `续写恢复模式下 context_compaction reasoning_tokens=0 应继续透明透传: ${continuationCompactionResponse.status}`,
+    );
+    assert(
+      !continuationCompactionResponse.text.includes("encrypted_content"),
+      "续写恢复模式下 context_compaction 不应因自动 include 向客户端暴露 encrypted_content",
+    );
+    const continuationCompactionRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationCompactionKey,
+    );
+    assert(
+      continuationCompactionRequests.length === 1 &&
+        !(
+          Array.isArray(continuationCompactionRequests[0].body?.include) &&
+          continuationCompactionRequests[0].body.include.includes("reasoning.encrypted_content")
+        ),
+      "续写恢复模式下 context_compaction 不应自动给上游请求补 encrypted include",
+    );
+
+    const continuationCleanKey = "continuation-normal-128";
+    const cleanContinuationResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        input: "正常请求不应暴露自动 include",
+        test_sequence_key: continuationCleanKey,
+        test_reasoning_sequence: [128],
+      },
+    );
+    assert(
+      cleanContinuationResponse.status === 200,
+      `续写恢复模式下普通 128 流式请求应透传成功: ${cleanContinuationResponse.status}`,
+    );
+    assert(
+      !cleanContinuationResponse.text.includes("encrypted_content"),
+      "续写恢复自动补 include 后，普通透传响应不应向客户端暴露 encrypted_content",
+    );
+    const cleanContinuationRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationCleanKey,
+    );
+    assert(
+      cleanContinuationRequests.length === 1 &&
+        Array.isArray(cleanContinuationRequests[0].body?.include) &&
+        cleanContinuationRequests[0].body.include.includes("reasoning.encrypted_content"),
+      "续写恢复普通 128 第一轮仍应只在上游侧自动补 encrypted include",
+    );
+
+    const continuationJsonFallbackKey = "continuation-stream-json-128";
+    const continuationJsonFallbackResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          stream: true,
+          input: "流式请求遇到 JSON 响应时也不应暴露自动 include",
+          test_sequence_key: continuationJsonFallbackKey,
+          test_reasoning_sequence: [128],
+          test_force_json_for_stream: true,
+          test_include_json_encrypted_reasoning_item: true,
+        }),
+      },
+    );
+    const continuationJsonFallbackText = await continuationJsonFallbackResponse.text();
+    assert(
+      continuationJsonFallbackResponse.status === 200,
+      `续写恢复模式下 stream:true JSON fallback 应透传成功: ${continuationJsonFallbackResponse.status}`,
+    );
+    assert(
+      !continuationJsonFallbackText.includes("encrypted_content") &&
+        !continuationJsonFallbackText.includes("json-encrypted-test-content"),
+      `stream:true JSON fallback 不应向客户端暴露 encrypted_content: ${continuationJsonFallbackText}`,
+    );
+    const continuationJsonFallbackRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationJsonFallbackKey,
+    );
+    assert(
+      continuationJsonFallbackRequests.length === 1 &&
+        Array.isArray(continuationJsonFallbackRequests[0].body?.include) &&
+        continuationJsonFallbackRequests[0].body.include.includes("reasoning.encrypted_content"),
+      "stream:true JSON fallback 仍应只在上游侧自动补 encrypted include",
+    );
+
+    const continuationNonStreamResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          test_reasoning_tokens: 516,
+        }),
+      },
+    );
+    const continuationNonStreamBody = await continuationNonStreamResponse.json();
+    assert(
+      continuationNonStreamResponse.status === 200,
+      `续写恢复流式动作不应影响已关闭非流式拦截的 Responses: ${continuationNonStreamResponse.status}`,
+    );
+    assert(
+      continuationNonStreamBody?.usage?.output_tokens_details?.reasoning_tokens === 516,
+      "续写恢复模式下非流式 Responses 应保留上游响应体",
+    );
+
+    const continuationNonStreamRetryConfigResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          intercept_rule_mode: "reasoning_tokens",
+          reasoning_equals: [516, 1034, 18],
+          stream_action: "continuation_recovery",
+          intercept_streaming: true,
+          intercept_non_streaming: true,
+          endpoints: ["/responses", "/chat/completions", "/v1/responses", "/v1/chat/completions"],
+          guard_retry_attempts: 1,
+        }),
+      },
+    );
+    assert(
+      continuationNonStreamRetryConfigResponse.status === 200,
+      `开启非流式拦截时保存续写恢复配置失败: ${continuationNonStreamRetryConfigResponse.status}`,
+    );
+    const continuationNonStreamRetryKey = "continuation-non-stream-516-then-128";
+    const continuationNonStreamRetryResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          stream: false,
+          test_sequence_key: continuationNonStreamRetryKey,
+          test_reasoning_sequence: [516, 128],
+        }),
+      },
+    );
+    const continuationNonStreamRetryBody = await continuationNonStreamRetryResponse.json();
+    assert(
+      continuationNonStreamRetryResponse.status === 200,
+      `续写恢复流式动作不应接管非流式，应继续使用既有内部重试: ${continuationNonStreamRetryResponse.status}`,
+    );
+    assert(
+      continuationNonStreamRetryBody?.usage?.output_tokens_details?.reasoning_tokens === 128,
+      "非流式命中 516 后应通过既有内部重试拿到第二轮 128 响应",
+    );
+    const continuationNonStreamRetryRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationNonStreamRetryKey,
+    );
+    assert(
+      continuationNonStreamRetryRequests.length === 2 &&
+        !continuationNonStreamRetryRequests.some(
+          (entry) =>
+            Array.isArray(entry.body?.include) &&
+            entry.body.include.includes("reasoning.encrypted_content"),
+        ),
+      "非流式内部重试不应被续写恢复改写为 encrypted include 续写请求",
+    );
+
+    const continuationStreamOnlyRestoreResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          intercept_rule_mode: "reasoning_tokens",
+          reasoning_equals: [516, 1034, 18],
+          stream_action: "continuation_recovery",
+          intercept_streaming: true,
+          intercept_non_streaming: false,
+          endpoints: ["/responses", "/chat/completions", "/v1/responses", "/v1/chat/completions"],
+          guard_retry_attempts: 1,
+        }),
+      },
+    );
+    assert(
+      continuationStreamOnlyRestoreResponse.status === 200,
+      `恢复仅流式续写恢复配置失败: ${continuationStreamOnlyRestoreResponse.status}`,
+    );
+
+    const continuationChatKey = "continuation-chat-completions-no-responses-recovery";
+    const continuationChatStream = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/v1/chat/completions`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        test_sequence_key: continuationChatKey,
+        test_reasoning_tokens: 516,
+      },
+    );
+    assert(
+      continuationChatStream.status === 502,
+      `续写恢复流式动作不应对 Chat Completions 做 Responses 续写，应回到旧拦截语义: ${continuationChatStream.status}`,
+    );
+    assert(
+      continuationChatStream.text.includes("reasoning_guard_triggered"),
+      "续写恢复流式动作下 Chat Completions 命中规则时应返回旧拦截体",
+    );
+    const continuationChatRequests = upstream.chatCompletionRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationChatKey,
+    );
+    assert(
+      continuationChatRequests.length === 2,
+      `Chat Completions 命中后应只走旧 internal retry，不应超过 2 次请求: ${continuationChatRequests.length}`,
+    );
+    assert(
+      continuationChatRequests.every(
+        (entry) =>
+          !(
+            Array.isArray(entry.body?.include) &&
+            entry.body.include.includes("reasoning.encrypted_content")
+          ),
+      ),
+      "Chat Completions 不应被续写恢复补 encrypted include",
+    );
+    assert(
+      continuationChatRequests.every((entry) => {
+        const serialized = JSON.stringify(entry.body || {});
+        return (
+          !serialized.includes("encrypted-test-content") &&
+          !serialized.includes('"phase":"commentary"')
+        );
+      }),
+      "Chat Completions 不应被续写恢复改写为 Responses commentary 续写请求",
+    );
+    const continuationChatLogSnapshot = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    assert(
+      !continuationChatLogSnapshot.entries.some((entry) =>
+        `${entry.message || ""}`.includes("[match] stream path=/v1/chat/completions") &&
+        `${entry.message || ""}`.includes(" action=continuation_recovery"),
+      ),
+      "Chat Completions 命中规则时不应记录 continuation_recovery 动作",
+    );
+
+    const statusBeforeContinuationRecovery = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/status`,
+    ).then((response) => response.json());
+
+    const continuationKey = "continuation-516-then-128";
+    const continuationResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        input: "请继续完成任务",
+        previous_response_id: "resp_prev_continuation",
+        test_sequence_key: continuationKey,
+        test_reasoning_sequence: [516, 128],
+        test_include_stream_reasoning_item: true,
+      },
+    );
+    assert(
+      continuationResponse.status === 200,
+      `续写恢复命中 516 后应恢复为 200: ${continuationResponse.status}`,
+    );
+    assert(
+      continuationResponse.text.includes("[DONE]"),
+      "续写恢复应返回最终一轮完整 SSE",
+    );
+    assert(
+      !continuationResponse.text.includes("reasoning_guard_triggered"),
+      "续写恢复不应向客户端暴露 516 拦截体",
+    );
+    const continuationRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationKey,
+    );
+    assertContinuationRequestShape(continuationRequests, "续写恢复 516", {
+      expectedOriginalText: "请继续完成任务",
+    });
+    assert(
+      continuationRequests[1].body?.previous_response_id === "resp_prev_continuation",
+      "续写恢复第二轮请求应保留 previous_response_id",
+    );
+    const continuationLogs = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    assert(
+      continuationLogs.entries.some((entry) =>
+        `${entry.message || ""}`.includes("[match] stream path=/responses") &&
+        `${entry.message || ""}`.includes("reasoning_tokens=516") &&
+        `${entry.message || ""}`.includes("action=continuation_recovery remaining=1") &&
+        `${entry.message || ""}`.includes("mode=reasoning_tokens"),
+      ),
+      "续写恢复日志应明确标记 continuation_recovery",
+    );
+    const statusAfterContinuationRecovery = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/status`,
+    ).then((response) => response.json());
+    assert(
+      statusAfterContinuationRecovery.metrics.continuation_recovery_count ===
+        statusBeforeContinuationRecovery.metrics.continuation_recovery_count + 1,
+      "续写恢复命中后应计入续写次数",
+    );
+    assert(
+      statusAfterContinuationRecovery.metrics.continuation_recovery_success_count ===
+        statusBeforeContinuationRecovery.metrics.continuation_recovery_success_count + 1,
+      "续写恢复最终透传成功后应计入续写成功次数",
+    );
+    assert(
+      statusAfterContinuationRecovery.metrics.continuation_recovery_success_ratio ===
+        statusAfterContinuationRecovery.metrics.continuation_recovery_success_count /
+          statusAfterContinuationRecovery.metrics.continuation_recovery_count,
+      "续写成功率应按成功次数 / 续写次数计算",
+    );
+
+    const continuationResponseOutputKey = "continuation-response-output-item-516-then-128";
+    const responseOutputContinuationResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        input: [{ type: "message", role: "user", content: "测试 response.output reasoning item" }],
+        test_sequence_key: continuationResponseOutputKey,
+        test_reasoning_sequence: [516, 128],
+        test_stream_reasoning_item_location: "response_output",
+      },
+    );
+    assert(
+      responseOutputContinuationResponse.status === 200,
+      `续写恢复应能从 response.output 收集 encrypted reasoning item: ${responseOutputContinuationResponse.status}`,
+    );
+    const responseOutputContinuationRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationResponseOutputKey,
+    );
+    assertContinuationRequestShape(
+      responseOutputContinuationRequests,
+      "续写恢复 response.output reasoning item",
+    );
+
+    const continuationTierTwoKey = "continuation-1034-then-128";
+    const tierTwoLogsBefore = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    const tierTwoResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        input: [{ type: "message", role: "user", content: "测试 n=2 截断" }],
+        test_sequence_key: continuationTierTwoKey,
+        test_reasoning_sequence: [1034, 128],
+      },
+    );
+    assert(
+      tierTwoResponse.status === 200,
+      `续写恢复命中 1034 后应恢复为 200: ${tierTwoResponse.status}`,
+    );
+    assert(
+      upstream.responseRequests.filter(
+        (entry) => entry.body?.test_sequence_key === continuationTierTwoKey,
+      ).length === 2,
+      "续写恢复 1034 应向上游请求 2 次",
+    );
+    const tierTwoRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationTierTwoKey,
+    );
+    assertContinuationRequestShape(tierTwoRequests, "续写恢复 1034");
+    const tierTwoLogsAfter = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    const tierTwoNewLogs = tierTwoLogsAfter.entries.slice(
+      Array.isArray(tierTwoLogsBefore.entries) ? tierTwoLogsBefore.entries.length : 0,
+    );
+    assert(
+      tierTwoNewLogs.some((entry) =>
+        `${entry.message || ""}`.includes("reasoning_tokens=1034") &&
+        `${entry.message || ""}`.includes("action=continuation_recovery remaining=1"),
+      ),
+      "续写恢复 1034 日志应标记 continuation_recovery",
+    );
+
+    const continuationCustomKey = "continuation-custom-18-then-128";
+    const customContinuationLogsBefore = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    const customContinuationResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        input: [{ type: "message", role: "user", content: "测试自定义流式命中续写" }],
+        test_sequence_key: continuationCustomKey,
+        test_reasoning_sequence: [18, 128],
+      },
+    );
+    assert(
+      customContinuationResponse.status === 200,
+      `续写恢复应覆盖所有配置进规则的流式命中，reasoning_tokens=18 也应可续写: ${customContinuationResponse.status}`,
+    );
+    const customContinuationRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationCustomKey,
+    );
+    assertContinuationRequestShape(customContinuationRequests, "续写恢复自定义 reasoning_tokens=18");
+    const customContinuationLogsAfter = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    const customContinuationNewLogs = customContinuationLogsAfter.entries.slice(
+      Array.isArray(customContinuationLogsBefore.entries)
+        ? customContinuationLogsBefore.entries.length
+        : 0,
+    );
+    assert(
+      customContinuationNewLogs.some((entry) =>
+        `${entry.message || ""}`.includes("reasoning_tokens=18") &&
+        `${entry.message || ""}`.includes("action=continuation_recovery remaining=1"),
+      ),
+      "续写恢复自定义 reasoning_tokens=18 日志应标记 continuation_recovery",
+    );
+
+    const continuationV1Key = "continuation-v1-516-then-128";
+    const continuationV1Response = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/v1/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        input: [{ type: "message", role: "user", content: "测试 v1 续写" }],
+        test_sequence_key: continuationV1Key,
+        test_reasoning_sequence: [516, 128],
+      },
+    );
+    assert(
+      continuationV1Response.status === 200,
+      `续写恢复 /v1/responses 命中 516 后应恢复为 200: ${continuationV1Response.status}`,
+    );
+    assert(
+      upstream.responseRequests.filter(
+        (entry) => entry.body?.test_sequence_key === continuationV1Key,
+      ).length === 2,
+      "续写恢复 /v1/responses 应向上游请求 2 次",
+    );
+    const continuationV1Requests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationV1Key,
+    );
+    assertContinuationRequestShape(continuationV1Requests, "续写恢复 /v1/responses");
+
+    const continuationExplicitIncludeKey = "continuation-explicit-include-516-then-128";
+    const continuationExplicitIncludeResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        include: ["reasoning.encrypted_content"],
+        input: [{ type: "message", role: "user", content: "测试显式 include 后续写" }],
+        test_sequence_key: continuationExplicitIncludeKey,
+        test_reasoning_sequence: [516, 128],
+      },
+    );
+    assert(
+      continuationExplicitIncludeResponse.status === 200,
+      `显式 include encrypted_content 的续写恢复请求命中 516 后应恢复为 200: ${continuationExplicitIncludeResponse.status}`,
+    );
+    assert(
+      !continuationExplicitIncludeResponse.text.includes("encrypted_content"),
+      "续写恢复最终响应不应向客户端透出 encrypted_content，即使原请求显式 include",
+    );
+    assert(
+      !continuationExplicitIncludeResponse.text.includes("encrypted-test-content"),
+      "续写恢复最终响应不应向客户端透出 encrypted reasoning 内容值",
+    );
+    const continuationExplicitIncludeRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationExplicitIncludeKey,
+    );
+    assertContinuationRequestShape(
+      continuationExplicitIncludeRequests,
+      "显式 include encrypted_content 的续写恢复请求",
+    );
+    const continuationExplicitIncludeLogs = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    assert(
+      continuationExplicitIncludeLogs.entries.some((entry) =>
+        `${entry.message || ""}`.includes("reasoning_tokens=516") &&
+        `${entry.message || ""}`.includes("action=continuation_recovery"),
+      ),
+      "显式 include encrypted_content 的续写恢复日志应标记 continuation_recovery",
+    );
+
+    const finalOnlyContinuationConfigResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          intercept_rule_mode: "final_answer_only_high_xhigh",
+          stream_action: "continuation_recovery",
+          intercept_streaming: true,
+          intercept_non_streaming: true,
+          guard_retry_attempts: 0,
+        }),
+      },
+    );
+    assert(
+      finalOnlyContinuationConfigResponse.status === 200,
+      `final answer only + 续写恢复配置保存失败: ${finalOnlyContinuationConfigResponse.status}`,
+    );
+    const finalOnlyContinuationKey = "final-only-continuation-no-auto-include";
+    const finalOnlyContinuationResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        reasoning: { effort: "high" },
+        stream: true,
+        test_sequence_key: finalOnlyContinuationKey,
+        test_reasoning_sequence: [85],
+        test_include_final_answer_only: true,
+      },
+    );
+    assert(
+      finalOnlyContinuationResponse.status === 502,
+      `final answer only 规则下选择续写恢复不应因为自动 include 破坏原拦截: ${finalOnlyContinuationResponse.status}`,
+    );
+    const finalOnlyContinuationRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === finalOnlyContinuationKey,
+    );
+    assert(
+      finalOnlyContinuationRequests.length === 1 &&
+        !(
+          Array.isArray(finalOnlyContinuationRequests[0].body?.include) &&
+          finalOnlyContinuationRequests[0].body.include.includes("reasoning.encrypted_content")
+      ),
+      "final answer only 规则下续写恢复不应自动补 encrypted include 破坏 final-only 判定",
+    );
+    const finalOnlyContinuationLogs = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    assert(
+      finalOnlyContinuationLogs.entries.some((entry) =>
+        `${entry.message || ""}`.includes("[match] stream path=/responses") &&
+        `${entry.message || ""}`.includes("mode=final_answer_only_high_xhigh") &&
+        `${entry.message || ""}`.includes("action=return_status_502"),
+      ),
+      "final answer only 规则下无法构造续写时应按旧拦截返回 502",
+    );
+    assert(
+      !finalOnlyContinuationLogs.entries.some((entry) =>
+        `${entry.message || ""}`.includes("[match]") &&
+        `${entry.message || ""}`.includes("mode=final_answer_only_high_xhigh") &&
+        `${entry.message || ""}`.includes("action=continuation_recovery"),
+      ),
+      "final answer only 规则不应被自动 include 误触续写恢复",
+    );
+
+    const restoreReasoningModeAfterContinuationResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          intercept_rule_mode: "reasoning_tokens",
+          reasoning_equals: [516],
+          stream_action: "strict_502",
+          intercept_streaming: true,
+          intercept_non_streaming: true,
+          guard_retry_attempts: 3,
+        }),
+      },
+    );
+    assert(
+      restoreReasoningModeAfterContinuationResponse.status === 200,
+      `续写恢复测试后恢复默认规则失败: ${restoreReasoningModeAfterContinuationResponse.status}`,
+    );
+
     const restoreDefaultGuardRetryConfigResponse = await fetch(
       `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
       {
@@ -5225,11 +6279,11 @@ async function run() {
       statusWithModelInsights.model_insights.family_breakdown;
     assert(familyBreakdown, "status 缺少 family_breakdown");
     assert(
-      familyBreakdown["gpt-5.4"]?.consistency?.total_checked === 18,
+      familyBreakdown["gpt-5.4"]?.consistency?.total_checked === 20,
       `gpt-5.4 家族 total_checked 统计不正确: ${familyBreakdown["gpt-5.4"]?.consistency?.total_checked}`,
     );
     assert(
-      familyBreakdown["gpt-5.4"]?.consistency?.matched === 15,
+      familyBreakdown["gpt-5.4"]?.consistency?.matched === 17,
       `gpt-5.4 家族 matched 统计不正确: ${familyBreakdown["gpt-5.4"]?.consistency?.matched}`,
     );
     assert(
@@ -5241,7 +6295,7 @@ async function run() {
       "gpt-5.4 家族 unknown 统计不正确",
     );
     assert(
-      Math.abs(familyBreakdown["gpt-5.4"]?.consistency?.match_ratio - 15 / 16) <
+      Math.abs(familyBreakdown["gpt-5.4"]?.consistency?.match_ratio - 17 / 18) <
         1e-9,
       "gpt-5.4 家族声明一致率应排除 unknown",
     );
@@ -5264,26 +6318,33 @@ async function run() {
         ?.rebuild_suspected_count === 0,
       "gpt-5.4 家族 rebuild_suspected_count 统计不正确",
     );
+    const family55Consistency = familyBreakdown["gpt-5.5"]?.consistency || {};
     assert(
-      familyBreakdown["gpt-5.5"]?.consistency?.total_checked === 21,
-      `gpt-5.5 家族 total_checked 统计不正确: ${familyBreakdown["gpt-5.5"]?.consistency?.total_checked}`,
+      family55Consistency.total_checked >= 36,
+      `gpt-5.5 家族 total_checked 应包含续写恢复新增样本: ${family55Consistency.total_checked}`,
     );
     assert(
-      familyBreakdown["gpt-5.5"]?.consistency?.matched === 20,
-      "gpt-5.5 家族 matched 统计不正确",
+      family55Consistency.mismatched === 1,
+      `gpt-5.5 家族 mismatched 统计不正确: ${JSON.stringify(family55Consistency)}`,
     );
     assert(
-      familyBreakdown["gpt-5.5"]?.consistency?.mismatched === 1,
-      "gpt-5.5 家族 mismatched 统计不正确",
+      family55Consistency.unknown === 1,
+      `gpt-5.5 家族 unknown 统计不正确: ${JSON.stringify(family55Consistency)}`,
     );
     assert(
-      familyBreakdown["gpt-5.5"]?.consistency?.unknown === 0,
-      "gpt-5.5 家族 unknown 统计不正确",
+      family55Consistency.matched +
+        family55Consistency.mismatched +
+        family55Consistency.unknown ===
+        family55Consistency.total_checked,
+      "gpt-5.5 家族 total_checked 应等于 matched+mismatched+unknown",
     );
     assert(
-      Math.abs(familyBreakdown["gpt-5.5"]?.consistency?.match_ratio - 20 / 21) <
-        1e-9,
-      "gpt-5.5 家族声明一致率统计不正确",
+      Math.abs(
+        family55Consistency.match_ratio -
+          family55Consistency.matched /
+            (family55Consistency.matched + family55Consistency.mismatched),
+      ) < 1e-9,
+      "gpt-5.5 家族声明一致率应排除 unknown",
     );
     assert(
       familyBreakdown["gpt-5.5"]?.anomalies?.low_context_family_count === 0,

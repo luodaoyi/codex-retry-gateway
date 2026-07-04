@@ -87,7 +87,7 @@ function Read-JsonFile {
     return $null
   }
 
-  $raw = Get-Content -LiteralPath $Path -Raw
+  $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
   if ([string]::IsNullOrWhiteSpace($raw)) {
     return $null
   }
