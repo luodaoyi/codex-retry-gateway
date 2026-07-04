@@ -71,10 +71,37 @@ if (-not $canReuseExistingInstall) {
     if ([string]::IsNullOrWhiteSpace([string]$existingGatewayConfig.health_path)) {
       $existingGatewayConfig.health_path = "/__codex_retry_gateway/health"
     }
+    $existingInterceptRuleMode = if ($null -ne $existingGatewayConfig.PSObject.Properties["intercept_rule_mode"]) {
+      [string]$existingGatewayConfig.intercept_rule_mode
+    } else {
+      ""
+    }
+    $legacyContinuationRuleMode = $existingInterceptRuleMode.Trim().ToLowerInvariant() -eq "continuation_recovery"
+    if ($null -eq $existingGatewayConfig.PSObject.Properties["stream_action"] -or [string]::IsNullOrWhiteSpace([string]$existingGatewayConfig.stream_action)) {
+      if ($null -eq $existingGatewayConfig.PSObject.Properties["stream_action"]) {
+        $existingGatewayConfig | Add-Member -NotePropertyName "stream_action" -NotePropertyValue "continuation_recovery"
+      } else {
+        $existingGatewayConfig.stream_action = "continuation_recovery"
+      }
+    } elseif ($legacyContinuationRuleMode) {
+      $existingGatewayConfig.stream_action = "continuation_recovery"
+    }
+    if ($null -eq $existingGatewayConfig.PSObject.Properties["continuation_marker_text"] -or [string]::IsNullOrWhiteSpace([string]$existingGatewayConfig.continuation_marker_text)) {
+      if ($null -eq $existingGatewayConfig.PSObject.Properties["continuation_marker_text"]) {
+        $existingGatewayConfig | Add-Member -NotePropertyName "continuation_marker_text" -NotePropertyValue "Continue thinking..."
+      } else {
+        $existingGatewayConfig.continuation_marker_text = "Continue thinking..."
+      }
+    }
     if ($null -eq $existingGatewayConfig.PSObject.Properties["intercept_rule_mode"]) {
       $existingGatewayConfig | Add-Member -NotePropertyName "intercept_rule_mode" -NotePropertyValue "reasoning_tokens"
     } elseif ([string]$existingGatewayConfig.intercept_rule_mode -ne "final_answer_only_high_xhigh") {
       $existingGatewayConfig.intercept_rule_mode = "reasoning_tokens"
+    }
+    if ($null -eq $existingGatewayConfig.PSObject.Properties["reasoning_match_mode"]) {
+      $existingGatewayConfig | Add-Member -NotePropertyName "reasoning_match_mode" -NotePropertyValue "formula_518n_minus_2"
+    } elseif ([string]$existingGatewayConfig.reasoning_match_mode -ne "manual") {
+      $existingGatewayConfig.reasoning_match_mode = "formula_518n_minus_2"
     }
     if ($null -eq $existingGatewayConfig.PSObject.Properties["intercept_streaming"]) {
       $existingGatewayConfig | Add-Member -NotePropertyName "intercept_streaming" -NotePropertyValue $true
@@ -83,7 +110,7 @@ if (-not $canReuseExistingInstall) {
       $existingGatewayConfig | Add-Member -NotePropertyName "intercept_non_streaming" -NotePropertyValue $true
     }
     if ($null -eq $existingGatewayConfig.PSObject.Properties["guard_retry_attempts"]) {
-      $existingGatewayConfig | Add-Member -NotePropertyName "guard_retry_attempts" -NotePropertyValue 3
+      $existingGatewayConfig | Add-Member -NotePropertyName "guard_retry_attempts" -NotePropertyValue 5
     }
     if ($null -eq $existingGatewayConfig.PSObject.Properties["retry_upstream_capacity_errors"]) {
       $existingGatewayConfig | Add-Member -NotePropertyName "retry_upstream_capacity_errors" -NotePropertyValue $true

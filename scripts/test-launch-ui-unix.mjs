@@ -156,6 +156,63 @@ async function run() {
       installedConfig.includes(`base_url = "${gatewayBaseUrl}"`),
       "Unix launch did not redirect the current provider to the local gateway",
     );
+    const gatewayConfig = JSON.parse(
+      await readFile(path.join(stateRoot, "config", "config.json"), "utf8"),
+    );
+    assert(
+      gatewayConfig.continuation_marker_text === "Continue thinking...",
+      "Unix launch did not write default continuation_marker_text",
+    );
+    assert(
+      gatewayConfig.reasoning_match_mode === "formula_518n_minus_2",
+      "Unix launch did not write default reasoning_match_mode=formula_518n_minus_2",
+    );
+    assert(
+      gatewayConfig.guard_retry_attempts === 5,
+      "Unix launch did not write default guard_retry_attempts=5",
+    );
+    assert(
+      gatewayConfig.stream_action === "continuation_recovery",
+      "Unix launch did not write default stream_action=continuation_recovery",
+    );
+    await writeFile(
+      path.join(stateRoot, "config", "config.json"),
+      `${JSON.stringify(
+        {
+          ...gatewayConfig,
+          intercept_rule_mode: "  Continuation_Recovery  ",
+          continuation_marker_text: "  Unix custom marker  ",
+          stream_action: undefined,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await runBashScript(launchScript, [
+      "--codex-config-path",
+      toUnixPathForBash(codexConfigPath),
+      "--state-root",
+      toUnixPathForBash(stateRoot),
+      "--listen-port",
+      String(gatewayPort),
+      "--no-open",
+    ]);
+    const reusedGatewayConfig = JSON.parse(
+      await readFile(path.join(stateRoot, "config", "config.json"), "utf8"),
+    );
+    assert(
+      reusedGatewayConfig.intercept_rule_mode === "reasoning_tokens",
+      "Unix launch reuse did not migrate legacy continuation_recovery intercept_rule_mode",
+    );
+    assert(
+      reusedGatewayConfig.stream_action === "continuation_recovery",
+      "Unix launch reuse did not migrate legacy continuation_recovery rule mode into stream_action",
+    );
+    assert(
+      reusedGatewayConfig.continuation_marker_text === "  Unix custom marker  ",
+      "Unix launch reuse did not preserve custom continuation_marker_text",
+    );
 
     const uiResponse = await fetch(`${gatewayBaseUrl}/__codex_retry_gateway/ui`);
     assert(uiResponse.status === 200, `Unix UI page was not reachable: ${uiResponse.status}`);

@@ -39,7 +39,23 @@ const INTERCEPT_RULE_MODES = new Set([
   INTERCEPT_RULE_MODE_REASONING_TOKENS,
   INTERCEPT_RULE_MODE_FINAL_ONLY_HIGH_XHIGH,
 ]);
+const REASONING_MATCH_MODE_MANUAL = "manual";
+const REASONING_MATCH_MODE_FORMULA_518N_MINUS_2 = "formula_518n_minus_2";
+const REASONING_MATCH_MODES = new Set([
+  REASONING_MATCH_MODE_MANUAL,
+  REASONING_MATCH_MODE_FORMULA_518N_MINUS_2,
+]);
 const FINAL_ONLY_INTERCEPT_EFFORTS = new Set(["high", "xhigh"]);
+const STREAM_ACTION_STRICT_502 = "strict_502";
+const STREAM_ACTION_DISCONNECT = "disconnect";
+const STREAM_ACTION_CONTINUATION_RECOVERY = "continuation_recovery";
+const STREAM_ACTIONS = new Set([
+  STREAM_ACTION_STRICT_502,
+  STREAM_ACTION_DISCONNECT,
+  STREAM_ACTION_CONTINUATION_RECOVERY,
+]);
+const CONTINUATION_ENCRYPTED_INCLUDE = "reasoning.encrypted_content";
+const CONTINUATION_MARKER_TEXT_DEFAULT = "Continue thinking...";
 const REQUEST_KIND_NORMAL = "normal";
 const REQUEST_KIND_CONTEXT_COMPACTION = "context_compaction";
 const CONTEXT_COMPACTION_MARKERS = [
@@ -71,13 +87,15 @@ const DEFAULT_CONFIG = {
   request_body_limit_bytes: DEFAULT_REQUEST_BODY_LIMIT_BYTES,
   endpoints: ["/responses", "/chat/completions", "/v1/responses", "/v1/chat/completions"],
   intercept_rule_mode: INTERCEPT_RULE_MODE_REASONING_TOKENS,
+  reasoning_match_mode: REASONING_MATCH_MODE_FORMULA_518N_MINUS_2,
   reasoning_equals: [516, 1034, 1552],
+  continuation_marker_text: CONTINUATION_MARKER_TEXT_DEFAULT,
   intercept_streaming: true,
   intercept_non_streaming: true,
   non_stream_status_code: 502,
-  guard_retry_attempts: 3,
+  guard_retry_attempts: 5,
   retry_upstream_capacity_errors: true,
-  stream_action: "strict_502",
+  stream_action: STREAM_ACTION_CONTINUATION_RECOVERY,
   log_match: true,
   health_path: "/__codex_retry_gateway/health",
   active_probe: {
@@ -412,6 +430,13 @@ function normalizeInterceptRuleMode(value) {
   return INTERCEPT_RULE_MODES.has(normalized)
     ? normalized
     : INTERCEPT_RULE_MODE_REASONING_TOKENS;
+}
+
+function normalizeReasoningMatchMode(value) {
+  const normalized = `${value || ""}`.trim().toLowerCase();
+  return REASONING_MATCH_MODES.has(normalized)
+    ? normalized
+    : DEFAULT_CONFIG.reasoning_match_mode;
 }
 
 function normalizeNonEmptyString(value) {
@@ -761,6 +786,18 @@ function normalizeGuardRetryAttempts(value) {
     throw new Error("guard_retry_attempts 必须是大于等于 0 的整数");
   }
   return parsed;
+}
+
+function normalizeContinuationMarkerText(value, fallback = CONTINUATION_MARKER_TEXT_DEFAULT) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  return value.trim() ? value : fallback;
+}
+
+function normalizeStreamAction(value) {
+  const normalized = `${value || ""}`.trim().toLowerCase();
+  return STREAM_ACTIONS.has(normalized) ? normalized : DEFAULT_CONFIG.stream_action;
 }
 
 function normalizeTrackedFamilyList(values, fallback = []) {
@@ -1238,6 +1275,9 @@ function applyStructureSignalsFromPayload(payload, structure, { fromStream = fal
   }
   if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
     markVisibleContent(structure);
+  }
+  if (payload?.item && typeof payload.item === "object") {
+    inspectOutputItemForStructure(payload.item, structure);
   }
   const outputCollections = [payload?.output, payload?.response?.output];
   for (const outputItems of outputCollections) {
@@ -3530,6 +3570,8 @@ function createMonitor() {
     blocked_response_count: 0,
     blocked_streaming_count: 0,
     blocked_non_streaming_count: 0,
+    continuation_recovery_count: 0,
+    continuation_recovery_success_count: 0,
     observed_reasoning_counts: {},
     local_model_counts: {},
     upstream_model_counts: {},
@@ -3651,6 +3693,24 @@ function recordBlockedResponse(monitor, streamKind) {
   } else if (streamKind === "non-stream") {
     monitor.blocked_non_streaming_count += 1;
   }
+}
+
+function recordContinuationRecoveryAttempt(monitor, requestTracking) {
+  monitor.continuation_recovery_count += 1;
+  if (requestTracking) {
+    requestTracking.continuation_recovery_attempted = true;
+  }
+}
+
+function recordContinuationRecoverySuccess(monitor, requestTracking) {
+  if (!requestTracking?.continuation_recovery_attempted) {
+    return;
+  }
+  if (requestTracking.continuation_recovery_success_recorded) {
+    return;
+  }
+  requestTracking.continuation_recovery_success_recorded = true;
+  monitor.continuation_recovery_success_count += 1;
 }
 
 function recordBypassedProxyRequest(monitor, pathname) {
@@ -3901,6 +3961,8 @@ function finalizeModelInsights(monitor, pathname, context, errorPayload = null) 
 function buildMetricsSnapshot(monitor) {
   const reasoning516Count = monitor.observed_reasoning_counts["516"] || 0;
   const inspectedResponseCount = monitor.inspected_response_count;
+  const continuationRecoveryCount = monitor.continuation_recovery_count || 0;
+  const continuationRecoverySuccessCount = monitor.continuation_recovery_success_count || 0;
   return {
     started_at: monitor.started_at,
     total_proxy_request_count: monitor.total_proxy_request_count,
@@ -3916,6 +3978,10 @@ function buildMetricsSnapshot(monitor) {
     blocked_response_count: monitor.blocked_response_count,
     blocked_streaming_count: monitor.blocked_streaming_count,
     blocked_non_streaming_count: monitor.blocked_non_streaming_count,
+    continuation_recovery_count: continuationRecoveryCount,
+    continuation_recovery_success_count: continuationRecoverySuccessCount,
+    continuation_recovery_success_ratio:
+      continuationRecoveryCount === 0 ? 0 : continuationRecoverySuccessCount / continuationRecoveryCount,
     reasoning_516_count: reasoning516Count,
     reasoning_516_ratio:
       inspectedResponseCount === 0 ? 0 : reasoning516Count / inspectedResponseCount,
@@ -4138,7 +4204,19 @@ async function loadConfig(configPath) {
     config.reasoning_equals,
     DEFAULT_CONFIG.reasoning_equals,
   );
-  config.intercept_rule_mode = normalizeInterceptRuleMode(config.intercept_rule_mode);
+  const legacyContinuationRuleMode =
+    `${loaded.intercept_rule_mode || ""}`.trim().toLowerCase() === STREAM_ACTION_CONTINUATION_RECOVERY;
+  config.intercept_rule_mode = legacyContinuationRuleMode
+    ? INTERCEPT_RULE_MODE_REASONING_TOKENS
+    : normalizeInterceptRuleMode(config.intercept_rule_mode);
+  config.reasoning_match_mode = normalizeReasoningMatchMode(config.reasoning_match_mode);
+  config.continuation_marker_text = normalizeContinuationMarkerText(
+    config.continuation_marker_text,
+    DEFAULT_CONFIG.continuation_marker_text,
+  );
+  config.stream_action = legacyContinuationRuleMode
+    ? STREAM_ACTION_CONTINUATION_RECOVERY
+    : normalizeStreamAction(config.stream_action);
   config.intercept_streaming = config.intercept_streaming !== false;
   config.intercept_non_streaming = config.intercept_non_streaming !== false;
   config.guard_retry_attempts = normalizeGuardRetryAttempts(config.guard_retry_attempts);
@@ -5282,6 +5360,10 @@ function buildEditableConfig(currentConfig, payload) {
     payload.intercept_rule_mode === undefined
       ? normalizeInterceptRuleMode(currentConfig.intercept_rule_mode)
       : normalizeInterceptRuleMode(payload.intercept_rule_mode);
+  const nextReasoningMatchMode =
+    payload.reasoning_match_mode === undefined
+      ? normalizeReasoningMatchMode(currentConfig.reasoning_match_mode)
+      : normalizeReasoningMatchMode(payload.reasoning_match_mode);
   const nextEndpoints = normalizeStringList(payload.endpoints, currentConfig.endpoints).map(normalizePath);
   const nextStatusCode =
     payload.non_stream_status_code === undefined
@@ -5303,6 +5385,17 @@ function buildEditableConfig(currentConfig, payload) {
     payload.retry_upstream_capacity_errors === undefined
       ? currentConfig.retry_upstream_capacity_errors !== false
       : Boolean(payload.retry_upstream_capacity_errors);
+  const nextStreamAction =
+    payload.stream_action === undefined
+      ? normalizeStreamAction(currentConfig.stream_action)
+      : normalizeStreamAction(payload.stream_action);
+  const nextContinuationMarkerText =
+    payload.continuation_marker_text === undefined
+      ? currentConfig.continuation_marker_text
+      : normalizeContinuationMarkerText(
+          payload.continuation_marker_text,
+          DEFAULT_CONFIG.continuation_marker_text,
+        );
   const nextActiveProbe =
     payload.active_probe === undefined
       ? currentConfig.active_probe
@@ -5336,6 +5429,7 @@ function buildEditableConfig(currentConfig, payload) {
   return {
     ...currentConfig,
     intercept_rule_mode: nextInterceptRuleMode,
+    reasoning_match_mode: nextReasoningMatchMode,
     reasoning_equals: nextReasoning,
     endpoints: nextEndpoints,
     intercept_streaming: nextInterceptStreaming,
@@ -5343,6 +5437,8 @@ function buildEditableConfig(currentConfig, payload) {
     non_stream_status_code: nextStatusCode,
     guard_retry_attempts: nextGuardRetryAttempts,
     retry_upstream_capacity_errors: nextRetryUpstreamCapacityErrors,
+    stream_action: nextStreamAction,
+    continuation_marker_text: nextContinuationMarkerText,
     log_match: payload.log_match === undefined ? currentConfig.log_match : Boolean(payload.log_match),
     active_probe: nextActiveProbe,
   };
@@ -5689,7 +5785,8 @@ function buildManagementHtml() {
         line-height: 1.25;
       }
 
-      .compact-config-field input {
+      .compact-config-field input,
+      .compact-config-field select {
         min-height: 38px;
         padding: 8px 12px;
         border-radius: 14px;
@@ -5705,6 +5802,67 @@ function buildManagementHtml() {
         font-size: 13px;
         line-height: 1.35;
         font-weight: 600;
+      }
+
+      .compact-config-field.is-formula-locked label {
+        color: #8fb9d8;
+      }
+
+      .compact-config-field.is-formula-locked input {
+        color: #9db6ca;
+        background: linear-gradient(135deg, rgba(83, 111, 137, 0.20), rgba(19, 31, 44, 0.78));
+        border-color: rgba(126, 180, 220, 0.24);
+        box-shadow: inset 0 0 0 1px rgba(13, 24, 34, 0.45);
+        cursor: not-allowed;
+        opacity: 1;
+      }
+
+      .compact-config-field.is-formula-locked .hint {
+        color: #82aeca;
+      }
+
+      .policy-summary {
+        display: grid;
+        gap: 6px;
+        padding: 13px 14px;
+        border-radius: 16px;
+        background: linear-gradient(135deg, rgba(32, 230, 195, 0.12), rgba(96, 165, 250, 0.08));
+        border: 1px solid rgba(32, 230, 195, 0.24);
+      }
+
+      .policy-summary-title,
+      .setting-group-title {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .policy-summary strong {
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .setting-group {
+        display: grid;
+        gap: 10px;
+        padding: 12px;
+        border-radius: 16px;
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        background: rgba(148, 163, 184, 0.06);
+      }
+
+      .setting-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 10px;
+      }
+
+      @media (max-width: 720px) {
+        .setting-row {
+          grid-template-columns: 1fr;
+        }
       }
 
       .rule-mode-toggle {
@@ -6461,6 +6619,8 @@ function buildManagementHtml() {
               <div class="stat"><label>非流式规则命中</label><strong id="matchedNonStreamingCountValue">0</strong></div>
               <div class="stat"><label>流式实际拦截</label><strong id="blockedStreamingCountValue">0</strong></div>
               <div class="stat"><label>非流式实际拦截</label><strong id="blockedNonStreamingCountValue">0</strong></div>
+              <div class="stat"><label>续写次数</label><strong id="continuationRecoveryCountValue">0</strong></div>
+              <div class="stat"><label>续写成功率</label><strong id="continuationRecoverySuccessRatioValue">0.00%</strong></div>
             </div>
             <p class="footnote" id="statsFootnote">
               如果“当前 Codex Base URL”已经是本机监听地址，就说明当前 Codex 已经被这个 gateway 接管。统计口径按本次 gateway 启动以来累计。
@@ -6472,53 +6632,86 @@ function buildManagementHtml() {
           <div class="card-inner">
             <h2>拦截规则</h2>
             <form id="configForm">
-              <div class="field rule-mode-field">
-                <label>拦截规则模式</label>
-                <div class="inline-toggle rule-mode-toggle">
-                  <input id="interceptRuleModeReasoningTokensInput" name="intercept_rule_mode" type="radio" value="reasoning_tokens" />
-                  <label for="interceptRuleModeReasoningTokensInput">reasoning_tokens 长度（推荐）</label>
+              <div class="policy-summary">
+                <div class="policy-summary-title">当前生效策略</div>
+                <strong id="policySummaryValue">正在读取当前策略...</strong>
+              </div>
+
+              <div class="setting-group">
+                <div class="setting-group-title">命中条件</div>
+                <div class="field rule-mode-field">
+                  <label>规则模式</label>
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="interceptRuleModeReasoningTokensInput" name="intercept_rule_mode" type="radio" value="reasoning_tokens" />
+                    <label for="interceptRuleModeReasoningTokensInput">reasoning_tokens 长度（推荐）</label>
+                  </div>
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="interceptRuleModeFinalOnlyInput" name="intercept_rule_mode" type="radio" value="final_answer_only_high_xhigh" />
+                    <label for="interceptRuleModeFinalOnlyInput">final answer only（实验，排除 0）</label>
+                  </div>
+                  <div class="hint">推荐使用 reasoning_tokens；final answer only 仅作实验收窄规则。</div>
                 </div>
-                <div class="inline-toggle rule-mode-toggle">
-                  <input id="interceptRuleModeFinalOnlyInput" name="intercept_rule_mode" type="radio" value="final_answer_only_high_xhigh" />
-                  <label for="interceptRuleModeFinalOnlyInput">final answer only（实验，排除 0）</label>
+
+                <div class="field compact-config-field">
+                  <label for="reasoningMatchModeSelect">命中条件来源</label>
+                  <select id="reasoningMatchModeSelect" name="reasoning_match_mode">
+                    <option value="manual">手动填写 reasoning_equals</option>
+                    <option value="formula_518n_minus_2">518*n - 2 规则</option>
+                  </select>
+                  <div class="hint">518*n - 2 是公式规则，会匹配 516、1034、1552、2070 等所有符合公式的 reasoning_tokens，不只是前三个数字。</div>
                 </div>
-                <div class="hint">推荐使用 reasoning_tokens；final answer only 仅作实验收窄规则，排除普通 reasoning_tokens=0，可能漏掉仍影响正确性的 516 样本，不建议替代 516 主拦截。</div>
-              </div>
 
-              <div class="field">
-                <label for="reasoningInput">reasoning_equals</label>
-                <input id="reasoningInput" name="reasoning_equals" type="text" placeholder="例如：516, 1034, 1552" />
-                <div class="hint">多个值用英文逗号或空格分隔。</div>
-              </div>
-
-              <div class="field rule-mode-field">
-                <label>拦截目标</label>
-                <div class="inline-toggle rule-mode-toggle">
-                  <input id="interceptStreamingInput" name="intercept_streaming" type="checkbox" />
-                  <label for="interceptStreamingInput">拦截流式</label>
+                <div id="reasoningEqualsField" class="field compact-config-field">
+                  <label for="reasoningInput">reasoning_equals（手动模式）</label>
+                  <input id="reasoningInput" name="reasoning_equals" type="text" placeholder="例如：516, 1034, 1552" />
+                  <div id="reasoningEqualsHint" class="hint">手动模式下多个值用英文逗号或空格分隔；选择 518*n - 2 规则时，这里只保留为回退/参考列表。</div>
                 </div>
-                <div class="inline-toggle rule-mode-toggle">
-                  <input id="interceptNonStreamingInput" name="intercept_non_streaming" type="checkbox" />
-                  <label for="interceptNonStreamingInput">拦截非流式</label>
+              </div>
+
+              <div class="setting-group">
+                <div class="setting-group-title">命中后处理</div>
+                <div class="field rule-mode-field">
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="streamActionStrict502Input" name="stream_action" type="radio" value="strict_502" />
+                    <label for="streamActionStrict502Input">标准保护：网关内重试，耗尽后返回 502</label>
+                  </div>
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="streamActionContinuationRecoveryInput" name="stream_action" type="radio" value="continuation_recovery" />
+                    <label for="streamActionContinuationRecoveryInput">续写恢复：Responses 流式先续写</label>
+                  </div>
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="streamActionDisconnectInput" name="stream_action" type="radio" value="disconnect" />
+                    <label for="streamActionDisconnectInput">兼容旧行为：已透传时断开连接</label>
+                  </div>
+                  <div class="hint">续写恢复不是单独的拦截规则；它只改变流式 Responses 命中后的内部动作，命中条件仍由上面的规则模式决定。</div>
                 </div>
-                <div class="hint">当前模式：<strong id="interceptModeValue">流式+非流式</strong></div>
               </div>
 
-              <div class="field compact-config-field">
-                <label for="endpointsInput">endpoints</label>
-                <textarea id="endpointsInput" name="endpoints" placeholder="/responses"></textarea>
-                <div class="hint">每行一个路径。默认建议同时保留 root 与 /v1 两套路径。</div>
-              </div>
-
-              <div class="field compact-config-field">
-                <label for="statusCodeInput">non_stream_status_code</label>
-                <input id="statusCodeInput" name="non_stream_status_code" type="number" min="100" max="599" />
-              </div>
-
-              <div class="field compact-config-field">
-                <label for="guardRetryAttemptsInput">网关内重试次数</label>
-                <input id="guardRetryAttemptsInput" name="guard_retry_attempts" type="number" min="0" step="1" required />
-                <div class="hint">命中拦截规则、或开启下方 capacity 选项后命中上游 capacity 错误时生效；0 表示不做网关内重试。</div>
+              <div class="setting-group">
+                <div class="setting-group-title">重试与范围</div>
+                <div class="setting-row">
+                  <div class="field compact-config-field">
+                    <label for="guardRetryAttemptsInput">命中后最大内部尝试次数</label>
+                    <input id="guardRetryAttemptsInput" name="guard_retry_attempts" type="number" min="0" step="1" required />
+                  </div>
+                  <div class="field compact-config-field">
+                    <label for="statusCodeInput">最终返回状态码</label>
+                    <input id="statusCodeInput" name="non_stream_status_code" type="number" min="100" max="599" />
+                  </div>
+                </div>
+                <div class="hint">所有命中后内部动作共用这里的次数：普通内部重试、Responses 流式续写恢复、以及开启 capacity 选项后的上游 capacity 错误内重试；0 表示不做内部尝试。</div>
+                <div class="field rule-mode-field">
+                  <label>拦截范围</label>
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="interceptStreamingInput" name="intercept_streaming" type="checkbox" />
+                    <label for="interceptStreamingInput">流式</label>
+                  </div>
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="interceptNonStreamingInput" name="intercept_non_streaming" type="checkbox" />
+                    <label for="interceptNonStreamingInput">非流式</label>
+                  </div>
+                  <div class="hint">当前范围：<strong id="interceptModeValue">流式+非流式</strong></div>
+                </div>
               </div>
 
               <div class="inline-toggle rule-mode-toggle">
@@ -6530,6 +6723,12 @@ function buildManagementHtml() {
               <div class="inline-toggle rule-mode-toggle">
                 <input id="logMatchInput" name="log_match" type="checkbox" />
                 <label for="logMatchInput">log_match 命中时写日志</label>
+              </div>
+
+              <div class="field compact-config-field">
+                <label for="endpointsInput">高级：endpoints</label>
+                <textarea id="endpointsInput" name="endpoints" placeholder="/responses"></textarea>
+                <div class="hint">每行一个路径。默认建议同时保留 root 与 /v1 两套路径。</div>
               </div>
 
               <div class="actions">
@@ -7060,11 +7259,18 @@ function buildManagementHtml() {
       const refs = {
         form: document.getElementById('configForm'),
         reasoningInput: document.getElementById('reasoningInput'),
+        reasoningEqualsField: document.getElementById('reasoningEqualsField'),
+        reasoningEqualsHint: document.getElementById('reasoningEqualsHint'),
+        reasoningMatchModeSelect: document.getElementById('reasoningMatchModeSelect'),
         interceptRuleModeReasoningTokensInput: document.getElementById('interceptRuleModeReasoningTokensInput'),
         interceptRuleModeFinalOnlyInput: document.getElementById('interceptRuleModeFinalOnlyInput'),
         interceptStreamingInput: document.getElementById('interceptStreamingInput'),
         interceptNonStreamingInput: document.getElementById('interceptNonStreamingInput'),
         interceptModeValue: document.getElementById('interceptModeValue'),
+        policySummaryValue: document.getElementById('policySummaryValue'),
+        streamActionStrict502Input: document.getElementById('streamActionStrict502Input'),
+        streamActionDisconnectInput: document.getElementById('streamActionDisconnectInput'),
+        streamActionContinuationRecoveryInput: document.getElementById('streamActionContinuationRecoveryInput'),
         endpointsInput: document.getElementById('endpointsInput'),
         statusCodeInput: document.getElementById('statusCodeInput'),
         guardRetryAttemptsInput: document.getElementById('guardRetryAttemptsInput'),
@@ -7094,6 +7300,8 @@ function buildManagementHtml() {
         matchedNonStreamingCountValue: document.getElementById('matchedNonStreamingCountValue'),
         blockedStreamingCountValue: document.getElementById('blockedStreamingCountValue'),
         blockedNonStreamingCountValue: document.getElementById('blockedNonStreamingCountValue'),
+        continuationRecoveryCountValue: document.getElementById('continuationRecoveryCountValue'),
+        continuationRecoverySuccessRatioValue: document.getElementById('continuationRecoverySuccessRatioValue'),
         modelMatchRatioValue: document.getElementById('modelMatchRatioValue'),
         modelMismatchCountValue: document.getElementById('modelMismatchCountValue'),
         lowContextFamilyCountValue: document.getElementById('lowContextFamilyCountValue'),
@@ -7534,10 +7742,63 @@ function buildManagementHtml() {
         );
       }
 
+      function describeRuleTargetFromForm() {
+        if (refs.interceptRuleModeFinalOnlyInput.checked) {
+          return 'final answer only（high/xhigh，排除普通 0）';
+        }
+        if (refs.reasoningMatchModeSelect.value === 'formula_518n_minus_2') {
+          return 'reasoning_tokens 命中 518*n - 2 规则';
+        }
+        try {
+          const values = parseReasoningInput();
+          return 'reasoning_tokens 命中 ' + values.join(' / ');
+        } catch {
+          return 'reasoning_tokens 命中当前输入值';
+        }
+      }
+
+      function syncReasoningMatchModeFromForm() {
+        const formulaMode = refs.reasoningMatchModeSelect.value === 'formula_518n_minus_2';
+        refs.reasoningInput.disabled = formulaMode;
+        refs.reasoningEqualsField.classList.toggle('is-formula-locked', formulaMode);
+        refs.reasoningEqualsHint.textContent = formulaMode
+          ? '公式模式已接管命中条件：这里仅保留为回退/参考列表，不能直接编辑。'
+          : '手动模式下多个值用英文逗号或空格分隔；选择 518*n - 2 规则时，这里只保留为回退/参考列表。';
+      }
+
+      function describeStreamActionFromForm() {
+        const attempts = Number.parseInt(refs.guardRetryAttemptsInput.value, 10);
+        const safeAttempts = Number.isFinite(attempts) && attempts >= 0 ? attempts : 0;
+        const statusCode = Number.parseInt(refs.statusCodeInput.value, 10) || 502;
+        if (refs.streamActionContinuationRecoveryInput.checked) {
+          return 'Responses 流式先续写恢复；最大内部尝试 ' + safeAttempts + ' 次，失败或仍命中返回 ' + statusCode;
+        }
+        if (refs.streamActionDisconnectInput.checked) {
+          return '兼容旧行为：已透传时断开连接；未透传时最大内部尝试 ' + safeAttempts + ' 次，仍命中返回 ' + statusCode;
+        }
+        return '网关内重试；最大内部尝试 ' + safeAttempts + ' 次，仍命中返回 ' + statusCode;
+      }
+
+      function syncPolicySummaryFromForm() {
+        refs.policySummaryValue.textContent =
+          describeRuleTargetFromForm() + ' -> ' + describeStreamActionFromForm();
+      }
+
       function getInterceptRuleModeFromForm() {
-        return refs.interceptRuleModeFinalOnlyInput.checked
-          ? 'final_answer_only_high_xhigh'
-          : 'reasoning_tokens';
+        if (refs.interceptRuleModeFinalOnlyInput.checked) {
+          return 'final_answer_only_high_xhigh';
+        }
+        return 'reasoning_tokens';
+      }
+
+      function getStreamActionFromForm() {
+        if (refs.streamActionContinuationRecoveryInput.checked) {
+          return 'continuation_recovery';
+        }
+        if (refs.streamActionDisconnectInput.checked) {
+          return 'disconnect';
+        }
+        return 'strict_502';
       }
 
       function collectInterceptPayloadFromForm() {
@@ -7550,6 +7811,7 @@ function buildManagementHtml() {
           intercept_rule_mode: getInterceptRuleModeFromForm(),
           intercept_streaming: interceptStreaming,
           intercept_non_streaming: interceptNonStreaming,
+          stream_action: getStreamActionFromForm(),
         };
       }
 
@@ -7635,6 +7897,10 @@ function buildManagementHtml() {
         refs.matchedNonStreamingCountValue.textContent = String(metrics.matched_non_streaming_count ?? 0);
         refs.blockedStreamingCountValue.textContent = String(metrics.blocked_streaming_count ?? 0);
         refs.blockedNonStreamingCountValue.textContent = String(metrics.blocked_non_streaming_count ?? 0);
+        refs.continuationRecoveryCountValue.textContent = String(metrics.continuation_recovery_count ?? 0);
+        refs.continuationRecoverySuccessRatioValue.textContent = formatPercent(
+          Number(metrics.continuation_recovery_success_ratio ?? 0),
+        );
         const statsDifference = Math.max(0, totalProxyRequestCount - inspectedResponseCount);
         const footnoteParts = [
           '如果“当前 Codex Base URL”已经是本机监听地址，就说明当前 Codex 已经被这个 gateway 接管。统计口径按本次 gateway 启动以来累计。',
@@ -7668,17 +7934,30 @@ function buildManagementHtml() {
 
       function fillForm(config) {
         refs.reasoningInput.value = Array.isArray(config?.reasoning_equals) ? config.reasoning_equals.join(', ') : '';
+        refs.reasoningMatchModeSelect.value = config?.reasoning_match_mode === 'formula_518n_minus_2'
+          ? 'formula_518n_minus_2'
+          : 'manual';
         const interceptRuleMode = config?.intercept_rule_mode === 'final_answer_only_high_xhigh'
-          ? 'final_answer_only_high_xhigh'
-          : 'reasoning_tokens';
+            ? 'final_answer_only_high_xhigh'
+            : 'reasoning_tokens';
         refs.interceptRuleModeFinalOnlyInput.checked = interceptRuleMode === 'final_answer_only_high_xhigh';
         refs.interceptRuleModeReasoningTokensInput.checked = interceptRuleMode === 'reasoning_tokens';
+        const streamAction = config?.stream_action === 'continuation_recovery'
+          ? 'continuation_recovery'
+          : config?.stream_action === 'disconnect'
+            ? 'disconnect'
+            : 'strict_502';
+        refs.streamActionContinuationRecoveryInput.checked = streamAction === 'continuation_recovery';
+        refs.streamActionDisconnectInput.checked = streamAction === 'disconnect';
+        refs.streamActionStrict502Input.checked = streamAction === 'strict_502';
         refs.interceptStreamingInput.checked = config?.intercept_streaming !== false;
         refs.interceptNonStreamingInput.checked = config?.intercept_non_streaming !== false;
         syncInterceptModeValueFromForm();
         refs.endpointsInput.value = Array.isArray(config?.endpoints) ? config.endpoints.join('\\n') : '';
         refs.statusCodeInput.value = config?.non_stream_status_code ?? 502;
-        refs.guardRetryAttemptsInput.value = String(config?.guard_retry_attempts ?? 3);
+        refs.guardRetryAttemptsInput.value = String(config?.guard_retry_attempts ?? 5);
+        syncReasoningMatchModeFromForm();
+        syncPolicySummaryFromForm();
         refs.retryUpstreamCapacityErrorsInput.checked = config?.retry_upstream_capacity_errors !== false;
         refs.logMatchInput.checked = Boolean(config?.log_match);
         const activeProbe = config?.active_probe || {};
@@ -8474,6 +8753,7 @@ function buildManagementHtml() {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               reasoning_equals: parseReasoningInput(),
+              reasoning_match_mode: refs.reasoningMatchModeSelect.value,
               endpoints: parseEndpointsInput(),
               ...interceptPayload,
               non_stream_status_code: Number.parseInt(refs.statusCodeInput.value, 10),
@@ -8577,14 +8857,31 @@ function buildManagementHtml() {
       if (refs.themeToggleButton) {
         refs.themeToggleButton.addEventListener('click', toggleTheme);
       }
+      [
+        refs.reasoningInput,
+        refs.reasoningMatchModeSelect,
+        refs.interceptRuleModeReasoningTokensInput,
+        refs.interceptRuleModeFinalOnlyInput,
+        refs.streamActionStrict502Input,
+        refs.streamActionDisconnectInput,
+        refs.streamActionContinuationRecoveryInput,
+        refs.statusCodeInput,
+        refs.guardRetryAttemptsInput,
+      ].forEach((control) => {
+        control.addEventListener('input', syncPolicySummaryFromForm);
+        control.addEventListener('change', syncPolicySummaryFromForm);
+      });
+      refs.reasoningMatchModeSelect.addEventListener('change', syncReasoningMatchModeFromForm);
       refs.interceptStreamingInput.addEventListener('change', () => {
         syncInterceptModeValueFromForm();
+        syncPolicySummaryFromForm();
         if (!refs.interceptStreamingInput.checked && !refs.interceptNonStreamingInput.checked) {
           setMessage('流式与非流式至少选择一个拦截目标。', 'error');
         }
       });
       refs.interceptNonStreamingInput.addEventListener('change', () => {
         syncInterceptModeValueFromForm();
+        syncPolicySummaryFromForm();
         if (!refs.interceptStreamingInput.checked && !refs.interceptNonStreamingInput.checked) {
           setMessage('流式与非流式至少选择一个拦截目标。', 'error');
         }
@@ -9069,9 +9366,11 @@ async function handleManagementRequest(runtime, req, res, requestUrl) {
     const ruleTarget =
       nextConfig.intercept_rule_mode === INTERCEPT_RULE_MODE_FINAL_ONLY_HIGH_XHIGH
         ? "final_answer_only_high_xhigh efforts=high,xhigh exclude_reasoning_tokens=0"
-        : `reasoning_equals=${nextConfig.reasoning_equals.join(",")}`;
+        : normalizeReasoningMatchMode(nextConfig.reasoning_match_mode) === REASONING_MATCH_MODE_FORMULA_518N_MINUS_2
+          ? "reasoning_formula=518*n-2"
+          : `reasoning_equals=${nextConfig.reasoning_equals.join(",")}`;
     runtime.logger(
-      `[config] updated intercept_rule_mode=${nextConfig.intercept_rule_mode} rule_target=${ruleTarget} retry_upstream_capacity_errors=${nextConfig.retry_upstream_capacity_errors !== false} endpoints=${nextConfig.endpoints.join(",")}`,
+      `[config] updated intercept_rule_mode=${nextConfig.intercept_rule_mode} reasoning_match_mode=${nextConfig.reasoning_match_mode} rule_target=${ruleTarget} stream_action=${nextConfig.stream_action} retry_upstream_capacity_errors=${nextConfig.retry_upstream_capacity_errors !== false} endpoints=${nextConfig.endpoints.join(",")}`,
     );
     const state = await readRuntimeState(runtime);
     jsonResponse(res, 200, {
@@ -9298,7 +9597,13 @@ function matchPath(config, pathname) {
 }
 
 function reasoningMatched(config, reasoning) {
-  return reasoning !== null && config.reasoning_equals.includes(reasoning);
+  if (!Number.isInteger(reasoning)) {
+    return false;
+  }
+  if (normalizeReasoningMatchMode(config?.reasoning_match_mode) === REASONING_MATCH_MODE_FORMULA_518N_MINUS_2) {
+    return reasoning >= 516 && (reasoning + 2) % 518 === 0;
+  }
+  return Array.isArray(config?.reasoning_equals) && config.reasoning_equals.includes(reasoning);
 }
 
 function isFinalAnswerOnlyStructure(structure) {
@@ -9377,6 +9682,199 @@ function isRetryableUpstreamFetchError(error) {
     return false;
   }
   return error instanceof TypeError && error.message === "fetch failed";
+}
+
+function isResponsesPath(pathname) {
+  return pathname === "/responses" || pathname === "/v1/responses";
+}
+
+function cloneJsonValue(value) {
+  if (value === undefined) {
+    return undefined;
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function cloneContinuationReasoningItem(item) {
+  if (
+    item &&
+    item.type === "reasoning" &&
+    typeof item.encrypted_content === "string" &&
+    item.encrypted_content.trim()
+  ) {
+    return cloneJsonValue(item);
+  }
+  return null;
+}
+
+function collectContinuationReasoningItem(payload) {
+  const directItem = cloneContinuationReasoningItem(payload?.item);
+  if (directItem) {
+    return directItem;
+  }
+  const outputCollections = [payload?.output, payload?.response?.output];
+  for (const outputItems of outputCollections) {
+    if (!Array.isArray(outputItems)) {
+      continue;
+    }
+    for (const item of outputItems) {
+      const reasoningItem = cloneContinuationReasoningItem(item);
+      if (reasoningItem) {
+        return reasoningItem;
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeResponsesInputItemForContinuation(item) {
+  if (typeof item === "string") {
+    return {
+      type: "message",
+      role: "user",
+      content: item,
+    };
+  }
+  return cloneJsonValue(item);
+}
+
+function normalizeResponsesInputForContinuation(input) {
+  if (Array.isArray(input)) {
+    return input.map(normalizeResponsesInputItemForContinuation);
+  }
+  if (input === undefined || input === null) {
+    return [];
+  }
+  return [normalizeResponsesInputItemForContinuation(input)];
+}
+
+function mergeContinuationInclude(include) {
+  const items = Array.isArray(include) ? include.map((item) => `${item}`) : [];
+  if (!items.includes(CONTINUATION_ENCRYPTED_INCLUDE)) {
+    items.push(CONTINUATION_ENCRYPTED_INCLUDE);
+  }
+  return items;
+}
+
+function requestIncludesEncryptedReasoning(requestJson) {
+  return (
+    Array.isArray(requestJson?.include) &&
+    requestJson.include.some((item) => `${item}` === CONTINUATION_ENCRYPTED_INCLUDE)
+  );
+}
+
+function stripEncryptedContent(value) {
+  if (Array.isArray(value)) {
+    return value.map(stripEncryptedContent);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const stripped = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "encrypted_content") {
+      continue;
+    }
+    stripped[key] = stripEncryptedContent(entry);
+  }
+  return stripped;
+}
+
+function stripEncryptedContentFromSseBody(buffer) {
+  const text = Buffer.isBuffer(buffer) ? buffer.toString("utf8") : `${buffer || ""}`;
+  if (!text.includes("encrypted_content")) {
+    return Buffer.isBuffer(buffer) ? buffer : Buffer.from(text, "utf8");
+  }
+  const blocks = text.split(/\r?\n\r?\n/);
+  const transformed = blocks
+    .map((block) => {
+      if (!block) {
+        return block;
+      }
+      const lines = block.split(/\r?\n/);
+      const dataLines = lines
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.replace(/^data:\s?/, ""));
+      if (dataLines.length === 0) {
+        return block;
+      }
+      const payloadText = dataLines.join("\n");
+      if (payloadText === "[DONE]") {
+        return block;
+      }
+      try {
+        const strippedPayload = stripEncryptedContent(JSON.parse(payloadText));
+        return [
+          ...lines.filter((line) => !line.startsWith("data:")),
+          `data: ${JSON.stringify(strippedPayload)}`,
+        ].join("\n");
+      } catch {
+        return block;
+      }
+    })
+    .join("\n\n");
+  return Buffer.from(transformed, "utf8");
+}
+
+function buildContinuationMarkerItem(config) {
+  return {
+    type: "message",
+    role: "assistant",
+    phase: "commentary",
+    content: [
+      {
+        type: "output_text",
+        text: normalizeContinuationMarkerText(config?.continuation_marker_text),
+      },
+    ],
+  };
+}
+
+function buildContinuationRecoveryRequestBody(config, baseRequestJson, continuationReasoningItems) {
+  const nextBody = cloneJsonValue(baseRequestJson || {}) || {};
+  nextBody.stream = true;
+  nextBody.include = mergeContinuationInclude(nextBody.include);
+  nextBody.input = [
+    ...normalizeResponsesInputForContinuation(baseRequestJson?.input),
+    ...continuationReasoningItems.map(cloneJsonValue),
+    buildContinuationMarkerItem(config),
+  ];
+  return {
+    requestJson: nextBody,
+    requestBody: Buffer.from(JSON.stringify(nextBody), "utf8"),
+  };
+}
+
+function maybePrepareContinuationRecoveryRequestBody(
+  config,
+  pathname,
+  requestJson,
+  requestBody,
+  { shouldInspect = false, requestKind = REQUEST_KIND_NORMAL } = {},
+) {
+  const shouldAutoInclude =
+    normalizeStreamAction(config?.stream_action) === STREAM_ACTION_CONTINUATION_RECOVERY &&
+    normalizeInterceptRuleMode(config?.intercept_rule_mode) === INTERCEPT_RULE_MODE_REASONING_TOKENS &&
+    shouldInspect &&
+    requestKind !== REQUEST_KIND_CONTEXT_COMPACTION &&
+    config?.intercept_streaming !== false &&
+    !requestIncludesEncryptedReasoning(requestJson);
+  if (
+    !isResponsesPath(pathname) ||
+    !requestJson ||
+    typeof requestJson !== "object" ||
+    !requestJson.stream ||
+    !shouldAutoInclude
+  ) {
+    return { requestJson, requestBody, autoAddedEncryptedReasoning: false };
+  }
+  const nextBody = cloneJsonValue(requestJson) || {};
+  nextBody.include = mergeContinuationInclude(nextBody.include);
+  return {
+    requestJson: nextBody,
+    requestBody: Buffer.from(JSON.stringify(nextBody), "utf8"),
+    autoAddedEncryptedReasoning: true,
+  };
 }
 
 function getRequestPathname(req) {
@@ -9555,8 +10053,15 @@ async function handleNonStreaming({
   );
   copyHeadersToClient(upstreamResponse.headers, res);
   res.writeHead(upstreamResponse.status);
-  res.end(bodyBuffer);
+  const finalBody =
+    requestTracking?.strip_auto_encrypted_reasoning && parsed
+      ? Buffer.from(JSON.stringify(stripEncryptedContent(parsed)), "utf8")
+      : bodyBuffer;
+  res.end(finalBody);
   if (!matched) {
+    if (upstreamResponse.status < 400) {
+      recordContinuationRecoverySuccess(monitor, requestTracking);
+    }
     completeReasoningBehaviorSample({
       runtime,
       sample: reasoningSample,
@@ -9585,7 +10090,8 @@ async function handleStreaming({
   res,
   abortController,
 }) {
-  const strict502Mode = config.stream_action !== "disconnect";
+  const streamAction = normalizeStreamAction(config.stream_action);
+  const strict502Mode = streamAction !== STREAM_ACTION_DISCONNECT;
   const reader = upstreamResponse.body.getReader();
   const sseState = {
     decoder: new TextDecoder("utf8"),
@@ -9598,6 +10104,7 @@ async function handleStreaming({
   let sampleRecorded = false;
   let observedMatchedRule = false;
   let observedOnlyMatchedRule = false;
+  const continuationReasoningItems = [];
   const bufferedChunks = [];
 
   const finishReasoningSample = (options = {}) => {
@@ -9674,14 +10181,25 @@ async function handleStreaming({
         setRequestTrackingOutcome(requestTracking, "inspected");
         const shouldIntercept = config.intercept_streaming !== false;
         const canReturnBlockedStatus = strict502Mode;
+        const canContinuationRecover =
+          streamAction === STREAM_ACTION_CONTINUATION_RECOVERY &&
+          shouldIntercept &&
+          canReturnBlockedStatus &&
+          requestTracking?.request_kind !== REQUEST_KIND_CONTEXT_COMPACTION &&
+          isResponsesPath(pathname) &&
+          continuationReasoningItems.length > 0 &&
+          requestTracking?.guardRetryRemaining > 0;
         const canGuardRetry =
           shouldIntercept &&
           canReturnBlockedStatus &&
+          !canContinuationRecover &&
           requestTracking?.guardRetryRemaining > 0;
         if (config.log_match) {
           const action = !shouldIntercept || !canReturnBlockedStatus
             ? "observe_only"
-            : canGuardRetry
+            : canContinuationRecover
+              ? `continuation_recovery remaining=${requestTracking.guardRetryRemaining}`
+              : canGuardRetry
               ? `internal_retry remaining=${requestTracking.guardRetryRemaining}`
               : `return_status_${config.non_stream_status_code}`;
           logger(
@@ -9692,6 +10210,25 @@ async function handleStreaming({
         if (shouldIntercept && canReturnBlockedStatus) {
           recordBlockedResponse(monitor, "stream");
           finalizeModelInsights(monitor, pathname, modelContext);
+          if (canContinuationRecover) {
+            recordContinuationRecoveryAttempt(monitor, requestTracking);
+            const continuationRequest = buildContinuationRecoveryRequestBody(
+              config,
+              requestTracking?.requestJson,
+              continuationReasoningItems,
+            );
+            finishReasoningSample({
+              finalAction: "continuation_recovery",
+              clientHttpStatus: null,
+              matchedCurrentRule: true,
+              blockedByGateway: true,
+            });
+            return {
+              continuationRecovery: true,
+              requestBody: continuationRequest.requestBody,
+              requestJson: continuationRequest.requestJson,
+            };
+          }
           if (canGuardRetry) {
             finishReasoningSample({
               finalAction: "internal_retry",
@@ -9730,10 +10267,15 @@ async function handleStreaming({
       if (strict502Mode) {
         copyHeadersToClient(upstreamResponse.headers, res);
         res.writeHead(upstreamResponse.status);
-        const finalBody = Buffer.concat(bufferedChunks);
+        const finalBody = requestTracking?.strip_auto_encrypted_reasoning
+          ? stripEncryptedContentFromSseBody(Buffer.concat(bufferedChunks))
+          : Buffer.concat(bufferedChunks);
         res.end(finalBody);
       } else {
         res.end();
+      }
+      if (!observedOnlyMatchedRule && upstreamResponse.status < 400) {
+        recordContinuationRecoverySuccess(monitor, requestTracking);
       }
       finishReasoningSample({
         finalAction: observedOnlyMatchedRule ? "observe_only" : "passed",
@@ -9756,6 +10298,10 @@ async function handleStreaming({
       });
       applyParsedUsageToReasoningSample(reasoningSample, payload);
       applyStructureSignalsFromPayload(payload, structureAccumulator, { fromStream: true });
+      const continuationReasoningItem = collectContinuationReasoningItem(payload);
+      if (continuationReasoningItem) {
+        continuationReasoningItems.push(continuationReasoningItem);
+      }
       if (payloadHasVisibleContent(payload)) {
         markReasoningSampleFirstContent(reasoningSample, nowMs);
       }
@@ -9775,14 +10321,28 @@ async function handleStreaming({
       }
       setRequestTrackingOutcome(requestTracking, "inspected");
       const shouldIntercept = config.intercept_streaming !== false;
+      const canReturnBlockedStatus = strict502Mode || !wroteAnyChunk;
+      const canContinuationRecover =
+        streamAction === STREAM_ACTION_CONTINUATION_RECOVERY &&
+        shouldIntercept &&
+        canReturnBlockedStatus &&
+        requestTracking?.request_kind !== REQUEST_KIND_CONTEXT_COMPACTION &&
+        isResponsesPath(pathname) &&
+        continuationReasoningItems.length > 0 &&
+        requestTracking?.guardRetryRemaining > 0;
       const canGuardRetry =
-        shouldIntercept && (strict502Mode || !wroteAnyChunk) && requestTracking?.guardRetryRemaining > 0;
+        shouldIntercept &&
+        canReturnBlockedStatus &&
+        !canContinuationRecover &&
+        requestTracking?.guardRetryRemaining > 0;
       if (config.log_match) {
         const action = !shouldIntercept
           ? "observe_only"
+          : canContinuationRecover
+            ? `continuation_recovery remaining=${requestTracking.guardRetryRemaining}`
           : canGuardRetry
             ? `internal_retry remaining=${requestTracking.guardRetryRemaining}`
-            : strict502Mode || !wroteAnyChunk
+            : canReturnBlockedStatus
               ? `return_status_${config.non_stream_status_code}`
               : "disconnect";
         logger(`[match] stream path=${pathname} ${ruleMatch.reasonForLog} action=${action} mode=${ruleMatch.mode}`);
@@ -9801,10 +10361,29 @@ async function handleStreaming({
       }
 
       recordBlockedResponse(monitor, "stream");
-      if (strict502Mode || !wroteAnyChunk) {
+      if (canReturnBlockedStatus) {
         abortController.abort();
         reader.cancel().catch(() => {});
         finalizeModelInsights(monitor, pathname, modelContext);
+        if (canContinuationRecover) {
+          recordContinuationRecoveryAttempt(monitor, requestTracking);
+          const continuationRequest = buildContinuationRecoveryRequestBody(
+            config,
+            requestTracking?.requestJson,
+            continuationReasoningItems,
+          );
+          finishReasoningSample({
+            finalAction: "continuation_recovery",
+            clientHttpStatus: null,
+            matchedCurrentRule: true,
+            blockedByGateway: true,
+          });
+          return {
+            continuationRecovery: true,
+            requestBody: continuationRequest.requestBody,
+            requestJson: continuationRequest.requestJson,
+          };
+        }
         if (canGuardRetry) {
           finishReasoningSample({
             finalAction: "internal_retry",
@@ -9858,6 +10437,8 @@ async function proxyRequest(runtime, req, res) {
   const requestTracking = {
     outcome: null,
     req,
+    continuation_recovery_attempted: false,
+    continuation_recovery_success_recorded: false,
   };
 
   if (pathname === config.health_path) {
@@ -9906,7 +10487,7 @@ async function proxyRequest(runtime, req, res) {
     recordReasoningBehaviorSample(runtime, rejectedSample);
     throw error;
   }
-  const requestJson = isJsonContentType(req.headers["content-type"])
+  let requestJson = isJsonContentType(req.headers["content-type"])
     ? parseJsonSafely(requestBody)
     : null;
   requestTracking.requestJson = requestJson;
@@ -9922,6 +10503,18 @@ async function proxyRequest(runtime, req, res) {
   const requestIsStream = Boolean(requestJson?.stream);
   const upstreamUrl = buildUpstreamUrl(config.upstream_base_url, incomingUrl);
   const shouldInspect = matchPath(config, pathname);
+  const preparedContinuationRequest = maybePrepareContinuationRecoveryRequestBody(
+    config,
+    pathname,
+    requestJson,
+    requestBody,
+    { shouldInspect, requestKind: requestTracking.request_kind },
+  );
+  requestJson = preparedContinuationRequest.requestJson;
+  requestBody = preparedContinuationRequest.requestBody;
+  requestTracking.requestJson = requestJson;
+  requestTracking.strip_auto_encrypted_reasoning =
+    preparedContinuationRequest.autoAddedEncryptedReasoning === true;
   let guardRetryAttemptsUsed = 0;
 
   while (true) {
@@ -10029,6 +10622,19 @@ async function proxyRequest(runtime, req, res) {
             upstreamResponse,
             res,
           });
+
+      if (
+        handlerResult?.continuationRecovery &&
+        guardRetryAttemptsUsed < Number(config.guard_retry_attempts || 0)
+      ) {
+        requestTracking.continuation_recovery_attempted = true;
+        guardRetryAttemptsUsed += 1;
+        requestBody = handlerResult.requestBody;
+        requestJson = handlerResult.requestJson;
+        requestTracking.requestJson = requestJson;
+        requestTracking.strip_auto_encrypted_reasoning = true;
+        continue;
+      }
 
       if (handlerResult?.guardRetry && guardRetryAttemptsUsed < Number(config.guard_retry_attempts || 0)) {
         guardRetryAttemptsUsed += 1;

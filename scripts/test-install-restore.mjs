@@ -180,25 +180,40 @@ async function run() {
       gatewayConfig.intercept_rule_mode === "reasoning_tokens",
       "Gateway config default intercept_rule_mode should be reasoning_tokens",
     );
+    assert(
+      gatewayConfig.reasoning_match_mode === "formula_518n_minus_2",
+      "Gateway config default reasoning_match_mode should be formula_518n_minus_2",
+    );
     assert(gatewayConfig.intercept_streaming === true, "Gateway config default intercept_streaming should be true");
     assert(
       gatewayConfig.intercept_non_streaming === true,
       "Gateway config default intercept_non_streaming should be true",
     );
-    assert(gatewayConfig.guard_retry_attempts === 3, "Gateway config default guard_retry_attempts should be 3");
+    assert(gatewayConfig.guard_retry_attempts === 5, "Gateway config default guard_retry_attempts should be 5");
     assert(
       gatewayConfig.retry_upstream_capacity_errors === true,
       "Gateway config default retry_upstream_capacity_errors should be true",
+    );
+    assert(
+      gatewayConfig.continuation_marker_text === "Continue thinking...",
+      "Gateway config default continuation_marker_text should be present",
+    );
+    assert(
+      gatewayConfig.stream_action === "continuation_recovery",
+      "Gateway config default stream_action should be continuation_recovery",
     );
     await mkdir(path.join(legacyStateRoot, "config"), { recursive: true });
     const legacyGatewayConfig = {
       ...gatewayConfig,
       listen_port: legacyGatewayPort,
       request_body_limit_bytes: 10 * 1024 * 1024,
+      intercept_rule_mode: "  Continuation_Recovery  ",
+      continuation_marker_text: "  自定义续写 marker  ",
     };
     delete legacyGatewayConfig.intercept_streaming;
     delete legacyGatewayConfig.intercept_non_streaming;
-    delete legacyGatewayConfig.intercept_rule_mode;
+    delete legacyGatewayConfig.reasoning_match_mode;
+    delete legacyGatewayConfig.stream_action;
     delete legacyGatewayConfig.guard_retry_attempts;
     delete legacyGatewayConfig.retry_upstream_capacity_errors;
     await writeFile(
@@ -227,10 +242,18 @@ async function run() {
     );
     assert(
       reinstalledGatewayConfig.intercept_rule_mode === "reasoning_tokens",
-      "Install script did not migrate missing intercept_rule_mode",
+      "Install script did not migrate legacy continuation_recovery intercept_rule_mode",
     );
     assert(
-      reinstalledGatewayConfig.guard_retry_attempts === 3,
+      reinstalledGatewayConfig.stream_action === "continuation_recovery",
+      "Install script did not migrate legacy continuation_recovery rule mode into stream_action",
+    );
+    assert(
+      reinstalledGatewayConfig.reasoning_match_mode === "formula_518n_minus_2",
+      "Install script did not migrate missing reasoning_match_mode to formula_518n_minus_2",
+    );
+    assert(
+      reinstalledGatewayConfig.guard_retry_attempts === 5,
       "Install script did not migrate missing guard_retry_attempts",
     );
     assert(
@@ -241,6 +264,10 @@ async function run() {
       reinstalledGatewayConfig.request_body_limit_bytes === 100 * 1024 * 1024,
       "Install script did not migrate legacy 10MB request_body_limit_bytes",
     );
+    assert(
+      reinstalledGatewayConfig.continuation_marker_text === "  自定义续写 marker  ",
+      `Install script did not preserve continuation_marker_text: ${JSON.stringify(reinstalledGatewayConfig.continuation_marker_text)}`,
+    );
     await runPowerShellScript(restoreScript, [
       "-CodexConfigPath",
       legacyCodexConfigPath,
@@ -249,7 +276,10 @@ async function run() {
     ]);
     delete gatewayConfig.intercept_streaming;
     delete gatewayConfig.intercept_non_streaming;
-    delete gatewayConfig.intercept_rule_mode;
+    gatewayConfig.intercept_rule_mode = "  Continuation_Recovery  ";
+    gatewayConfig.reasoning_match_mode = "formula_518n_minus_2";
+    gatewayConfig.continuation_marker_text = "  Launch reuse marker  ";
+    delete gatewayConfig.stream_action;
     delete gatewayConfig.guard_retry_attempts;
     delete gatewayConfig.retry_upstream_capacity_errors;
     gatewayConfig.request_body_limit_bytes = 10 * 1024 * 1024;
@@ -280,10 +310,22 @@ async function run() {
     );
     assert(
       migratedGatewayConfig.intercept_rule_mode === "reasoning_tokens",
-      "Launch UI reuse did not migrate missing intercept_rule_mode",
+      "Launch UI reuse did not migrate legacy continuation_recovery intercept_rule_mode",
     );
     assert(
-      migratedGatewayConfig.guard_retry_attempts === 3,
+      migratedGatewayConfig.stream_action === "continuation_recovery",
+      "Launch UI reuse did not migrate legacy continuation_recovery rule mode into stream_action",
+    );
+    assert(
+      migratedGatewayConfig.reasoning_match_mode === "formula_518n_minus_2",
+      "Launch UI reuse did not preserve formula reasoning_match_mode",
+    );
+    assert(
+      migratedGatewayConfig.continuation_marker_text === "  Launch reuse marker  ",
+      `Launch UI reuse did not preserve continuation_marker_text: ${JSON.stringify(migratedGatewayConfig.continuation_marker_text)}`,
+    );
+    assert(
+      migratedGatewayConfig.guard_retry_attempts === 5,
       "Launch UI reuse did not migrate missing guard_retry_attempts",
     );
     assert(
@@ -324,7 +366,9 @@ async function run() {
     assert(uiHtml.includes("实际拦截总数"), "Management UI HTML did not include actual block total stats");
     assert(uiHtml.includes("实际拦截占比"), "Management UI HTML did not include actual block ratio stats");
     assert(uiHtml.includes('id="guardRetryAttemptsInput"'), "Management UI HTML did not include guard retry input");
-    assert(uiHtml.includes("网关内重试次数"), "Management UI HTML did not include guard retry label");
+    assert(uiHtml.includes("当前生效策略"), "Management UI HTML did not include policy summary");
+    assert(uiHtml.includes("命中后处理"), "Management UI HTML did not include post-hit action section");
+    assert(uiHtml.includes("命中后最大内部尝试次数"), "Management UI HTML did not include guard retry label");
     assert(
       uiHtml.includes('id="retryUpstreamCapacityErrorsInput"'),
       "Management UI HTML did not include upstream capacity retry input",
@@ -350,6 +394,10 @@ async function run() {
       statusPayload.config?.intercept_rule_mode === "reasoning_tokens",
       "Status API did not expose intercept_rule_mode default",
     );
+    assert(
+      statusPayload.config?.reasoning_match_mode === "formula_518n_minus_2",
+      "Status API did not expose reasoning_match_mode default",
+    );
     assert(statusPayload.config?.intercept_streaming === true, "Status API did not expose intercept_streaming default");
     assert(
       statusPayload.config?.intercept_non_streaming === true,
@@ -359,7 +407,7 @@ async function run() {
       statusPayload.config?.request_body_limit_bytes === 100 * 1024 * 1024,
       "Status API did not expose upgraded request_body_limit_bytes default",
     );
-    assert(statusPayload.config?.guard_retry_attempts === 3, "Status API did not expose guard_retry_attempts default");
+    assert(statusPayload.config?.guard_retry_attempts === 5, "Status API did not expose guard_retry_attempts default");
     assert(
       statusPayload.config?.retry_upstream_capacity_errors === true,
       "Status API did not expose retry_upstream_capacity_errors default",
@@ -431,11 +479,14 @@ async function run() {
         reasoning_equals: [1024],
         endpoints: ["/responses", "/v1/responses"],
         intercept_rule_mode: "final_answer_only_high_xhigh",
+        reasoning_match_mode: "manual",
         intercept_streaming: true,
         intercept_non_streaming: false,
         non_stream_status_code: 503,
         guard_retry_attempts: 2,
         retry_upstream_capacity_errors: false,
+        stream_action: "continuation_recovery",
+        continuation_marker_text: "  API marker  ",
         log_match: false,
         active_probe: {
           enabled: true,
@@ -455,6 +506,18 @@ async function run() {
     assert(
       saveConfigPayload.config?.intercept_rule_mode === "final_answer_only_high_xhigh",
       "Save config API did not return intercept_rule_mode",
+    );
+    assert(
+      saveConfigPayload.config?.stream_action === "continuation_recovery",
+      "Save config API did not return stream_action",
+    );
+    assert(
+      saveConfigPayload.config?.reasoning_match_mode === "manual",
+      "Save config API did not return reasoning_match_mode",
+    );
+    assert(
+      saveConfigPayload.config?.continuation_marker_text === "  API marker  ",
+      `Save config API did not preserve continuation_marker_text: ${JSON.stringify(saveConfigPayload.config?.continuation_marker_text)}`,
     );
     assert(saveConfigPayload.config?.intercept_streaming === true, "Save config API did not return intercept_streaming");
     assert(
@@ -484,15 +547,47 @@ async function run() {
       "Saved config file did not persist retry_upstream_capacity_errors",
     );
     assert(
-      updatedGatewayConfig.active_probe?.enabled === true,
+      updatedGatewayConfig.stream_action === "continuation_recovery",
+      "Saved config file did not persist stream_action",
+    );
+    assert(
+      updatedGatewayConfig.reasoning_match_mode === "manual",
+      "Saved config file did not persist reasoning_match_mode",
+    );
+    assert(
+      updatedGatewayConfig.continuation_marker_text === "  API marker  ",
+      `Saved config file did not preserve continuation_marker_text: ${JSON.stringify(updatedGatewayConfig.continuation_marker_text)}`,
+    );
+    const resetMarkerResponse = await fetch(`http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        continuation_marker_text: "   ",
+      }),
+    });
+    const resetMarkerPayload = await resetMarkerResponse.json();
+    assert(resetMarkerResponse.status === 200, `Reset continuation marker API failed: ${resetMarkerResponse.status}`);
+    assert(
+      resetMarkerPayload.config?.continuation_marker_text === "Continue thinking...",
+      `Blank continuation_marker_text should reset to default: ${JSON.stringify(resetMarkerPayload.config?.continuation_marker_text)}`,
+    );
+    const resetMarkerGatewayConfig = JSON.parse(
+      await readFile(path.join(stateRoot, "config", "config.json"), "utf8"),
+    );
+    assert(
+      resetMarkerGatewayConfig.continuation_marker_text === "Continue thinking...",
+      `Blank continuation_marker_text should persist default: ${JSON.stringify(resetMarkerGatewayConfig.continuation_marker_text)}`,
+    );
+    assert(
+      resetMarkerGatewayConfig.active_probe?.enabled === true,
       "Saved config file did not persist active_probe.enabled",
     );
     assert(
-      updatedGatewayConfig.active_probe?.interval_ms === 11 * 60 * 1000,
+      resetMarkerGatewayConfig.active_probe?.interval_ms === 11 * 60 * 1000,
       "Saved config file did not persist active_probe.interval_ms",
     );
     assert(
-      JSON.stringify(updatedGatewayConfig.active_probe?.target_families) === JSON.stringify(["gpt-5.4"]),
+      JSON.stringify(resetMarkerGatewayConfig.active_probe?.target_families) === JSON.stringify(["gpt-5.4"]),
       "Saved config file did not persist active_probe.target_families",
     );
     const invalidAutoProbeResponse = await fetch(`http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`, {
@@ -538,6 +633,13 @@ async function run() {
     assert(
       incrementalLogsPayload.entries.some((entry) => `${entry.message || ""}`.includes("[config] updated")),
       "Incremental logs API did not include config update log",
+    );
+    assert(
+      incrementalLogsPayload.entries.some((entry) =>
+        `${entry.message || ""}`.includes("[config] updated") &&
+        `${entry.message || ""}`.includes("stream_action=continuation_recovery"),
+      ),
+      "Config update log did not include stream_action",
     );
 
     const blockedAfterSave = await fetch(`http://127.0.0.1:${gatewayPort}/responses`, {
