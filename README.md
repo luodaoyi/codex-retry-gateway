@@ -234,6 +234,7 @@ Issue #11 收口说明：
 - 实际拦截占比 = 实际拦截总数 / 被检查响应总数
 - 关闭某一类拦截后，该类命中仍会继续计入规则命中与模型一致性观测，但不会计入实际拦截
 - `guard_retry_attempts` 是“命中后最大内部尝试次数”；普通内部重试、`stream_action=continuation_recovery` 的 Responses 流式续写恢复、以及开启 `retry_upstream_capacity_errors` 后的指定上游 capacity 错误内重试都共用这个次数
+- 运行状态里的“续写次数”表示本次 gateway 启动以来实际触发 Responses 流式续写恢复的次数；“续写成功率”表示这些续写恢复最终成功透传到客户端的占比
 - `retry_upstream_capacity_errors` 只匹配 `Selected model is at capacity. Please try a different model.`，普通 `429` / `502` 等 HTTP 错误如果没有命中该特征，会继续原样透传
 - 网关内部重试的每次上游尝试都会计入代理请求总数；每次拿到并检查的响应都会计入被检查响应总数；命中当前拦截规则会计入当前规则命中总数，被吞掉重试或最终拦截会计入实际拦截总数
 - 命中日志里的 `action=internal_retry remaining=N` 表示本次命中只在网关内部吞掉并继续重试，没有把失败状态返回给 Codex；`action=return_status_502` 才表示已经达到重试上限或配置为 `0`，本次会对 Codex 返回拦截状态
