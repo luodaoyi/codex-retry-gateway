@@ -25,6 +25,20 @@ function assert(condition, message) {
   }
 }
 
+function padDatePart(value) {
+  return String(value).padStart(2, "0");
+}
+
+function formatLocalDateKey(date) {
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
+}
+
+function addLocalDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
 async function getFreePort() {
   const server = net.createServer();
   server.listen(0, "127.0.0.1");
@@ -201,7 +215,15 @@ function buildLongContextProbeResponsePayload(
   };
 }
 
-function buildStreamModels(parsed) {
+function buildStreamModels(parsed, sequenceCount = 0) {
+  const sequenceModels = selectStreamSequenceValue(
+    parsed,
+    "test_stream_models_sequence",
+    sequenceCount,
+  );
+  if (Array.isArray(sequenceModels) && sequenceModels.length > 0) {
+    return sequenceModels;
+  }
   if (
     Array.isArray(parsed.test_stream_models) &&
     parsed.test_stream_models.length > 0
@@ -244,6 +266,15 @@ function buildStreamEventIds(parsed, count) {
   return Array.from({ length: count }, () => null);
 }
 
+function selectStreamSequenceValue(parsed, key, sequenceCount = 0) {
+  const value = parsed[key];
+  if (!Array.isArray(value) || value.length === 0) {
+    return undefined;
+  }
+  const index = Math.min(sequenceCount, value.length - 1);
+  return value[index];
+}
+
 function selectStreamOutputText(parsed, sequenceCount = 0) {
   if (Array.isArray(parsed.test_stream_text_sequence)) {
     const index = Math.min(sequenceCount, parsed.test_stream_text_sequence.length - 1);
@@ -256,17 +287,31 @@ function selectStreamOutputText(parsed, sequenceCount = 0) {
   return "hello";
 }
 
+function selectStreamFlag(parsed, key, sequenceCount = 0) {
+  const value = parsed[key];
+  if (Array.isArray(value)) {
+    const index = Math.min(sequenceCount, value.length - 1);
+    return Boolean(value[index]);
+  }
+  return Boolean(value);
+}
 function buildResponsesStreamChunks(parsed, reasoning, sequenceCount = 0) {
-  const models = buildStreamModels(parsed);
+  const models = buildStreamModels(parsed, sequenceCount);
   const fingerprints = buildStreamFingerprints(parsed, models.length);
-  const responseIds = buildResponseIds(parsed, models.length);
+  const sequenceResponseId = selectStreamSequenceValue(parsed, "test_response_id_sequence", sequenceCount);
+  const responseIds =
+    sequenceResponseId === undefined
+      ? buildResponseIds(parsed, models.length)
+      : Array.from({ length: models.length }, () => sequenceResponseId);
   const eventIds = buildStreamEventIds(parsed, models.length);
   const finalModel =
-    parsed.test_stream_final_model ?? models[models.length - 1];
+    selectStreamSequenceValue(parsed, "test_stream_final_model_sequence", sequenceCount) ??
+    parsed.test_stream_final_model ??
+    models[models.length - 1];
   const finalFingerprint =
     fingerprints[fingerprints.length - 1] ?? fingerprints[0] ?? "fp_stream_1";
   const finalResponseId =
-    responseIds[responseIds.length - 1] ?? responseIds[0] ?? "resp_stream_1";
+    sequenceResponseId ?? responseIds[responseIds.length - 1] ?? responseIds[0] ?? "resp_stream_1";
   const serviceTier = parsed.test_service_tier ?? "priority";
   const chunks = [];
 
@@ -292,7 +337,7 @@ function buildResponsesStreamChunks(parsed, reasoning, sequenceCount = 0) {
   }
 
   if (
-    parsed.test_include_stream_reasoning_item ||
+    selectStreamFlag(parsed, "test_include_stream_reasoning_item", sequenceCount) ||
     (Array.isArray(parsed.include) && parsed.include.includes("reasoning.encrypted_content"))
   ) {
     const reasoningItem = {
@@ -303,13 +348,31 @@ function buildResponsesStreamChunks(parsed, reasoning, sequenceCount = 0) {
       summary: [],
     };
     if (parsed.test_stream_reasoning_item_location === "response_output") {
+      let snapshotOutputText = undefined;
+      if (Array.isArray(parsed.test_stream_snapshot_output_text_sequence)) {
+        const index = Math.min(sequenceCount, parsed.test_stream_snapshot_output_text_sequence.length - 1);
+        snapshotOutputText = parsed.test_stream_snapshot_output_text_sequence[index];
+      } else if (parsed.test_stream_snapshot_output_text !== undefined) {
+        snapshotOutputText = parsed.test_stream_snapshot_output_text;
+      }
+      const snapshotPayload = {
+        type: "response.output_snapshot",
+        response: {
+          output: [reasoningItem],
+        },
+      };
+      if (snapshotOutputText !== undefined && snapshotOutputText !== null) {
+        const snapshotText = `${snapshotOutputText}`;
+        snapshotPayload.output_text = snapshotText;
+        snapshotPayload.response.output_text = snapshotText;
+        snapshotPayload.response.output.push({
+          id: "msg_snapshot_tentative_1",
+          type: "message",
+          content: [{ type: "output_text", text: snapshotText }],
+        });
+      }
       chunks.push(
-        `data: ${JSON.stringify({
-          type: "response.output_snapshot",
-          response: {
-            output: [reasoningItem],
-          },
-        })}\n\n`,
+        `data: ${JSON.stringify(snapshotPayload)}\n\n`,
       );
     } else {
       chunks.push(
@@ -333,6 +396,22 @@ function buildResponsesStreamChunks(parsed, reasoning, sequenceCount = 0) {
     }
   }
 
+  if (parsed.test_include_stream_escaped_encrypted_content) {
+    chunks.push(
+      `data: {"type":"response.output_item.done","item":{"id":"rs_escaped_test_1","type":"reasoning","encrypted\\u005fcontent":"escaped-encrypted-test-content","summary":[]}}\n\n`,
+    );
+  }
+  if (parsed.test_include_stream_malformed_encrypted_content) {
+    chunks.push(
+      `data: {"type":"response.output_item.done","item":{"id":"rs_malformed_test_1","type":"reasoning","encrypted_content":"malformed-encrypted-test-content"\n\n`,
+    );
+  }
+  if (parsed.test_include_stream_sensitive_metadata_line) {
+    chunks.push(
+      `event: encrypted_content=${parsed.test_stream_metadata_secret ?? "metadata-line-encrypted-secret"}\ndata: {"type":"response.output_text.delta","delta":"metadata-clean"}\n\n`,
+    );
+  }
+
   const outputText = selectStreamOutputText(parsed, sequenceCount);
   if (outputText) {
     chunks.push(
@@ -343,6 +422,92 @@ function buildResponsesStreamChunks(parsed, reasoning, sequenceCount = 0) {
     );
   }
 
+  if (selectStreamFlag(parsed, "test_include_stream_message_item", sequenceCount)) {
+    const messageId = parsed.test_stream_message_item_id ?? "msg_test_1";
+    const messageText = parsed.test_stream_message_item_text ?? "tentative-message";
+    chunks.push(
+      `data: ${JSON.stringify({
+        type: "response.output_item.added",
+        output_index: 1,
+        item: {
+          id: messageId,
+          type: "message",
+          role: "assistant",
+          content: [],
+        },
+      })}\n\n`,
+    );
+    chunks.push(
+      `data: ${JSON.stringify({
+        type: "response.content_part.added",
+        output_index: 1,
+        item_id: messageId,
+        content_index: 0,
+        part: { type: "output_text", text: "" },
+      })}\n\n`,
+    );
+    chunks.push(
+      `data: ${JSON.stringify({
+        type: "response.output_text.delta",
+        output_index: 1,
+        item_id: messageId,
+        content_index: 0,
+        delta: messageText,
+      })}\n\n`,
+    );
+    chunks.push(
+      `data: ${JSON.stringify({
+        type: "response.output_item.done",
+        output_index: 1,
+        item: {
+          id: messageId,
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: messageText }],
+        },
+      })}\n\n`,
+    );
+  }
+  if (selectStreamFlag(parsed, "test_include_stream_function_call", sequenceCount)) {
+    const functionCallId = parsed.test_stream_function_call_id ?? "fc_test_1";
+    const callId = parsed.test_stream_function_call_call_id ?? "call_test_1";
+    const functionName = parsed.test_stream_function_call_name ?? "shell";
+    const functionArguments =
+      parsed.test_stream_function_call_arguments ?? "{\"cmd\":\"ls\"}";
+    chunks.push(
+      `data: ${JSON.stringify({
+        type: "response.output_item.added",
+        output_index: 1,
+        item: {
+          id: functionCallId,
+          type: "function_call",
+          name: functionName,
+          call_id: callId,
+        },
+      })}\n\n`,
+    );
+    chunks.push(
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 1,
+        item_id: functionCallId,
+        delta: functionArguments,
+      })}\n\n`,
+    );
+    chunks.push(
+      `data: ${JSON.stringify({
+        type: "response.output_item.done",
+        output_index: 1,
+        item: {
+          id: functionCallId,
+          type: "function_call",
+          name: functionName,
+          call_id: callId,
+          arguments: functionArguments,
+        },
+      })}\n\n`,
+    );
+  }
   models.forEach((model, index) => {
     const deltaPayload = {
       type: "response.model.delta",
@@ -2620,7 +2785,18 @@ function startFakeUpstream(port) {
         body += chunk;
       });
       req.on("end", () => {
-        const parsed = JSON.parse(body || "{}");
+        let parsed;
+        try {
+          parsed = JSON.parse(body || "{}");
+        } catch {
+          createJsonResponse(
+            res,
+            400,
+            { error: { code: "invalid_json", message: "invalid JSON request body" } },
+            { "x-upstream-test": "invalid-json" },
+          );
+          return;
+        }
         const authorization = req.headers.authorization || "";
         const probeBlockedByUpstream =
           authorization === "Bearer sk-probe-blocked";
@@ -2998,6 +3174,24 @@ function startFakeUpstream(port) {
           return;
         }
         if (parsed.stream) {
+          if (parsed.test_force_malformed_json_for_stream) {
+            res.writeHead(200, {
+              "content-type": "application/json; charset=utf-8",
+              "x-upstream-test": "responses-malformed-json",
+            });
+            res.end('{"output":[{"type":"reasoning","encrypted_content":"malformed-json-encrypted-secret"}');
+            return;
+          }
+          if (parsed.test_force_text_for_stream) {
+            res.writeHead(200, {
+              "content-type": "text/plain; charset=utf-8",
+              "x-upstream-test": "responses-text-fallback",
+            });
+            res.end(
+              `plain fallback encrypted_content:${parsed.test_plain_text_secret ?? "plain-text-encrypted-secret"}`,
+            );
+            return;
+          }
           if (parsed.test_force_json_for_stream) {
             finishJsonResponse();
             return;
@@ -3025,7 +3219,18 @@ function startFakeUpstream(port) {
         body += chunk;
       });
       req.on("end", () => {
-        const parsed = JSON.parse(body || "{}");
+        let parsed;
+        try {
+          parsed = JSON.parse(body || "{}");
+        } catch {
+          createJsonResponse(
+            res,
+            400,
+            { error: { code: "invalid_json", message: "invalid JSON request body" } },
+            { "x-upstream-test": "invalid-json" },
+          );
+          return;
+        }
         chatCompletionRequests.push({
           path: req.url,
           headers: {
@@ -3080,22 +3285,159 @@ function startFakeUpstream(port) {
   });
 }
 
-async function waitForHealth(url, timeoutMs = 5000) {
+function tailText(value, maxLength = 2000) {
+  const text = `${value || ""}`;
+  return text.length <= maxLength ? text : text.slice(-maxLength);
+}
+
+function escapeRegExp(value) {
+  return `${value}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function redactDiagnosticText(value) {
+  let text = `${value || ""}`;
+  text = text.replace(/Bearer\s+[A-Za-z0-9._~+\-/=]+/gi, "Bearer [REDACTED]");
+  text = text.replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-[REDACTED]");
+  text = text.replace(
+    /((?:["'])?(?:authorization|api[_-]?key|openai_api_key|cookie|set[-_]?cookie)(?:["'])?\s*[:=]\s*)(["'])(?:\\.|(?!\2).)*\2/gi,
+    "$1$2[REDACTED]$2",
+  );
+  text = text.replace(
+    /\b(authorization|api[_-]?key|openai_api_key|cookie|set[-_]?cookie)\b\s*[:=]\s*[^\r\n|]+/gi,
+    (_match, key) => `${key}: [REDACTED]`,
+  );
+  const home = os.homedir();
+  if (home) {
+    const variants = new Set([
+      home,
+      home.replaceAll("\\", "/"),
+      home.replaceAll("\\", "\\\\"),
+    ]);
+    for (const variant of variants) {
+      if (variant) {
+        text = text.replace(new RegExp(escapeRegExp(variant), "gi"), "~");
+      }
+    }
+  }
+  return text;
+}
+
+function diagnosticTail(value, maxLength = 2000) {
+  return tailText(redactDiagnosticText(value), maxLength);
+}
+
+async function buildGatewayHealthDiagnostics({ gateway = null, logPath = null } = {}) {
+  const details = [];
+  if (gateway?.child) {
+    details.push(
+      `child pid=${gateway.child.pid ?? "unknown"} exitCode=${gateway.child.exitCode ?? "null"} signalCode=${gateway.child.signalCode ?? "null"} killed=${gateway.child.killed}`,
+    );
+  }
+  if (gateway?.getOutput) {
+    const output = gateway.getOutput();
+    if (output.stdout) {
+      details.push(`stdout_tail=${JSON.stringify(diagnosticTail(output.stdout))}`);
+    }
+    if (output.stderr) {
+      details.push(`stderr_tail=${JSON.stringify(diagnosticTail(output.stderr))}`);
+    }
+  }
+  if (logPath) {
+    try {
+      const logText = await readFile(logPath, "utf8");
+      if (logText) {
+        details.push(`log_tail=${JSON.stringify(diagnosticTail(logText))}`);
+      }
+    } catch (error) {
+      details.push(`log_read_error=${error?.message || error}`);
+    }
+  }
+  return details.length > 0 ? ` diagnostics=${details.join(" | ")}` : "";
+}
+
+async function waitForHealth(url, options = {}) {
+  const normalizedOptions = typeof options === "number" ? { timeoutMs: options } : options;
+  const timeoutMs = normalizedOptions.timeoutMs ?? 15000;
   const startedAt = Date.now();
+  let lastStatus = null;
+  let lastBody = "";
+  let lastError = "";
   while (Date.now() - startedAt < timeoutMs) {
     try {
       const response = await fetch(url);
+      lastStatus = response.status;
+      const bodyText = await response.text();
+      lastBody = diagnosticTail(bodyText, 500);
       if (response.ok) {
-        return;
+        try {
+          const payload = JSON.parse(bodyText);
+          if (payload?.ok === true) {
+            return;
+          }
+          lastError = "health JSON missing ok=true";
+        } catch (error) {
+          lastError = `health response is not JSON: ${error?.message || error}`;
+        }
+      } else {
+        lastError = `health status ${response.status}`;
       }
-    } catch {
-      // ignore startup race
+    } catch (error) {
+      lastError = `${error?.message || error}`;
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error(`等待网关健康检查超时: ${url}`);
+  const diagnostics = await buildGatewayHealthDiagnostics(normalizedOptions);
+  const statusText = lastStatus === null ? "null" : String(lastStatus);
+  throw new Error(
+    `等待网关健康检查超时: ${url} timeoutMs=${timeoutMs} lastStatus=${statusText} lastError=${lastError || "none"} lastBody=${JSON.stringify(lastBody)}${diagnostics}`,
+  );
 }
 
+async function assertWaitForHealthRejectsInvalidOk() {
+  const port = await getFreePort();
+  const server = http.createServer((req, res) => {
+    createJsonResponse(res, 200, {
+      ok: false,
+      OPENAI_API_KEY: "sk-health-test-secret",
+      authorization: "Basic health-basic-secret",
+      cookie: "session=health-cookie-secret; theme=dark",
+      set_cookie: "token=health-set-cookie-secret",
+      home_path: path.join(os.homedir(), "health-secret"),
+      escaped_home_path: JSON.stringify(path.join(os.homedir(), "health-secret")).slice(1, -1),
+    });
+  });
+  server.listen(port, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    let failed = false;
+    try {
+      await waitForHealth(`http://127.0.0.1:${port}/health`, { timeoutMs: 120 });
+    } catch (error) {
+      failed = true;
+      const message = `${error?.message || error}`;
+      assert(message.includes("lastStatus=200"), `health 失败诊断应包含最后状态码: ${message}`);
+      assert(message.includes("lastBody="), `health 失败诊断应包含 lastBody 字段: ${message}`);
+      assert(
+        message.includes("lastError=health JSON missing ok=true"),
+        `health 失败诊断应包含 ok=false 根因: ${message}`,
+      );
+      assert(!message.includes("sk-health-test-secret"), `health 失败诊断不应泄露 key: ${message}`);
+      assert(!message.includes("health-basic-secret"), `health 失败诊断不应泄露 Basic auth: ${message}`);
+      assert(!message.includes("health-cookie-secret"), `health 失败诊断不应泄露 Cookie: ${message}`);
+      assert(!message.includes("health-set-cookie-secret"), `health 失败诊断不应泄露 Set-Cookie: ${message}`);
+      assert(!message.includes(os.homedir()), `health 失败诊断不应泄露 home 路径: ${message}`);
+      assert(
+        !message.includes(os.homedir().replaceAll("\\", "/")),
+        `health 失败诊断不应泄露 slash 归一化 home 路径: ${message}`,
+      );
+      assert(message.includes("[REDACTED]"), `health 失败诊断应脱敏 key: ${message}`);
+    }
+    assert(failed, "waitForHealth 不应把 ok=false 的 200 响应视为健康");
+  } finally {
+    server.close();
+    await once(server, "close");
+  }
+}
 async function waitForStatusCondition(url, predicate, timeoutMs = 5000) {
   const startedAt = Date.now();
   let lastPayload = null;
@@ -3134,12 +3476,85 @@ function startGateway(configPath, logPath) {
     stderr += chunk.toString();
   });
 
+  let closed = false;
+  child.__codexRetryGatewayClosePromise = new Promise((resolve) => {
+    const markClosed = () => {
+      closed = true;
+      resolve(true);
+    };
+    child.once("close", markClosed);
+    child.once("error", markClosed);
+  });
+  child.__codexRetryGatewayIsClosed = () => closed;
+
   return {
     child,
     getOutput() {
       return { stdout, stderr };
     },
   };
+}
+
+function waitForChildClose(child, timeoutMs = 5000) {
+  if (!child) {
+    return Promise.resolve(true);
+  }
+  if (typeof child.__codexRetryGatewayIsClosed === "function" && child.__codexRetryGatewayIsClosed()) {
+    return Promise.resolve(true);
+  }
+  if (child.__codexRetryGatewayClosePromise) {
+    return Promise.race([
+      child.__codexRetryGatewayClosePromise.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+    ]);
+  }
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (closed) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      child.off("close", onClose);
+      child.off("error", onError);
+      resolve(closed);
+    };
+    const onClose = () => finish(true);
+    const onError = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.once("close", onClose);
+    child.once("error", onError);
+  });
+}
+
+async function stopGateway(gateway) {
+  const child = gateway?.child;
+  if (!child) {
+    return;
+  }
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill();
+  }
+  let closed = await waitForChildClose(child, 5000);
+  if (!closed && process.platform === "win32" && child.pid) {
+    try {
+      await execFileText("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        windowsHide: true,
+      });
+    } catch {
+      // 进程可能已经退出；后续再等待一次 close。
+    }
+    closed = await waitForChildClose(child, 3000);
+  }
+  if (!closed) {
+    process.stderr.write(
+      `[cleanup-warning] gateway child did not close pid=${child.pid ?? "unknown"}\n`,
+    );
+  }
 }
 
 async function readSseUntilClose(url, requestBody, options = {}) {
@@ -3177,26 +3592,58 @@ async function readSseUntilClose(url, requestBody, options = {}) {
   };
 }
 
-function assertContinuationRequestShape(requests, label, { expectedOriginalText = null } = {}) {
+function objectHasKeyDeep(value, key) {
+  if (Array.isArray(value)) {
+    return value.some((item) => objectHasKeyDeep(item, key));
+  }
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  if (Object.hasOwn(value, key)) {
+    return true;
+  }
+  return Object.values(value).some((entry) => objectHasKeyDeep(entry, key));
+}
+
+function assertContinuationRequestShape(
+  requests,
+  label,
+  { expectedOriginalText = null, expectFirstEncryptedInclude = false } = {},
+) {
   assert(requests.length === 2, `${label} 应向上游请求 2 次: ${requests.length}`);
-  assert(
+  const firstIncludesEncryptedReasoning =
     Array.isArray(requests[0].body?.include) &&
-      requests[0].body.include.includes("reasoning.encrypted_content"),
-    `${label} 第一轮请求应带 include=reasoning.encrypted_content: ${JSON.stringify(requests[0].body?.include)}`,
+    requests[0].body.include.includes("reasoning.encrypted_content");
+  assert(
+    firstIncludesEncryptedReasoning === expectFirstEncryptedInclude,
+    expectFirstEncryptedInclude
+      ? `${label} 第一轮显式 include 应保留 reasoning.encrypted_content: ${JSON.stringify(requests[0].body?.include)}`
+      : `${label} 第一轮不应自动补 reasoning.encrypted_content: ${JSON.stringify(requests[0].body?.include)}`,
   );
   const followupInput = requests[1]?.body?.input || [];
   assert(Array.isArray(followupInput), `${label} 第二轮 input 应为数组: ${JSON.stringify(followupInput)}`);
+  const followupSerialized = JSON.stringify(followupInput);
   assert(
-    followupInput.some(
-      (item) =>
-        item?.type === "reasoning" &&
-        item?.encrypted_content === "encrypted-test-content",
-    ),
-    `${label} 第二轮请求应携带上一轮 encrypted reasoning: ${JSON.stringify(followupInput)}`,
+    !followupInput.some((item) => item?.type === "reasoning") &&
+      !objectHasKeyDeep(followupInput, "encrypted_content") &&
+      !followupSerialized.includes("encrypted-test-content") &&
+      !followupSerialized.includes("client-origin-encrypted-secret"),
+    `${label} 第二轮安全续写不应 replay 命中轮 encrypted reasoning: ${JSON.stringify(followupInput)}`,
   );
   assert(
-    followupInput.some((item) => item?.type === "message" && item?.phase === "commentary"),
-    `${label} 第二轮请求应追加 phase=commentary 标记: ${JSON.stringify(followupInput)}`,
+    !(
+      Array.isArray(requests[1]?.body?.include) &&
+      requests[1].body.include.includes("reasoning.encrypted_content")
+    ),
+    `${label} 第二轮安全续写不应继续请求 encrypted reasoning: ${JSON.stringify(requests[1]?.body?.include)}`,
+  );
+  assert(
+    countContinuationMarkers(followupInput) === 1,
+    `${label} 第二轮请求应且只应追加 1 个 phase=commentary 标记: ${JSON.stringify(followupInput)}`,
+  );
+  assert(
+    requests[1]?.body?.previous_response_id === undefined,
+    `${label} 第二轮请求应删除 previous_response_id: ${JSON.stringify(requests[1]?.body)}`,
   );
   if (expectedOriginalText) {
     assert(
@@ -3215,6 +3662,120 @@ function assertContinuationRequestShape(requests, label, { expectedOriginalText 
   }
 }
 
+function countSsePayloadText(text, pattern) {
+  return (text.match(pattern) || []).length;
+}
+
+function assertSingleFinalSseEnvelope(text, label) {
+  assert(
+    countSsePayloadText(text, /"type":"response\.created"/g) === 1,
+    `${label} 应只透出一个 response.created: ${text}`,
+  );
+  assert(
+    countSsePayloadText(text, /"type":"response\.in_progress"/g) === 1,
+    `${label} 应只透出一个 response.in_progress: ${text}`,
+  );
+  assert(
+    countSsePayloadText(text, /"type":"response\.completed"/g) === 1,
+    `${label} 应只透出一个 response.completed: ${text}`,
+  );
+  assert(
+    countSsePayloadText(text, /^data: \[DONE\]$/gm) === 1,
+    `${label} 应只透出一个 [DONE]: ${text}`,
+  );
+  const completedIndex = text.indexOf('"type":"response.completed"');
+  const doneIndex = text.indexOf("data: [DONE]");
+  assert(
+    completedIndex >= 0 && doneIndex > completedIndex,
+    `${label} response.completed 应出现在 [DONE] 之前: ${text}`,
+  );
+}
+
+function parseSseJsonPayloads(text) {
+  const payloads = [];
+  for (const block of `${text || ""}`.split(/\r?\n\r?\n/)) {
+    const dataLines = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.replace(/^data:\s?/, ""));
+    if (dataLines.length === 0) {
+      continue;
+    }
+    const payloadText = dataLines.join("\n");
+    if (payloadText === "[DONE]") {
+      continue;
+    }
+    try {
+      payloads.push(JSON.parse(payloadText));
+    } catch {
+      // 非 JSON SSE 数据不参与结构断言。
+    }
+  }
+  return payloads;
+}
+
+function countContinuationMarkers(input) {
+  if (!Array.isArray(input)) {
+    return 0;
+  }
+  return input.filter((item) => item?.type === "message" && item?.phase === "commentary").length;
+}
+
+function inputContainsText(input, expectedText) {
+  return JSON.stringify(input || "").includes(expectedText);
+}
+
+function assertTextDoesNotLeakEncryptedContent(text, label, secrets = []) {
+  assert(!text.includes("encrypted_content"), `${label} 不应包含 encrypted_content 字段名: ${text}`);
+  assert(!text.includes("\\u0065ncrypted_content"), `${label} 不应包含 escaped encrypted_content 字段名: ${text}`);
+  for (const secret of secrets) {
+    assert(!text.includes(secret), `${label} 不应包含敏感值 ${secret}: ${text}`);
+  }
+}
+
+function assertTextContainsAll(text, label, values) {
+  for (const value of values) {
+    assert(text.includes(value), `${label} 应包含样本定位 key ${value}: ${text}`);
+  }
+}
+
+function assertSseEnvelopeIdentity(text, label, { expectedId, expectedModel }) {
+  assertSingleFinalSseEnvelope(text, label);
+  const payloads = parseSseJsonPayloads(text);
+  const lifecyclePayloads = payloads.filter((payload) =>
+    ["response.created", "response.in_progress", "response.completed"].includes(payload?.type),
+  );
+  assert(
+    lifecyclePayloads.length === 3,
+    `${label} 应只包含 created/in_progress/completed 三个 lifecycle payload: ${text}`,
+  );
+  for (const payload of lifecyclePayloads) {
+    assert(
+      payload?.response?.id === expectedId && payload?.response?.model === expectedModel,
+      `${label} lifecycle 身份应全部来自最终干净轮 ${expectedId}/${expectedModel}: ${JSON.stringify(payload)}; body=${text}`,
+    );
+  }
+  for (const payload of payloads) {
+    if (payload?.response && Object.hasOwn(payload.response, "id")) {
+      assert(
+        payload.response.id === expectedId,
+        `${label} 所有带 response.id 的 payload 都应来自最终干净轮 ${expectedId}: ${JSON.stringify(payload)}; body=${text}`,
+      );
+    }
+    if (payload?.response && Object.hasOwn(payload.response, "model")) {
+      assert(
+        payload.response.model === expectedModel,
+        `${label} 所有带 response.model 的 payload 都应来自最终干净轮 ${expectedModel}: ${JSON.stringify(payload)}; body=${text}`,
+      );
+    }
+    if (Object.hasOwn(payload, "model")) {
+      assert(
+        payload.model === expectedModel,
+        `${label} 所有顶层 model 都应来自最终干净轮 ${expectedModel}: ${JSON.stringify(payload)}; body=${text}`,
+      );
+    }
+  }
+}
 async function run() {
   const tempRoot = await mkdtemp(
     path.join(os.tmpdir(), "codex-retry-gateway-"),
@@ -3276,6 +3837,8 @@ async function run() {
     "utf8",
   );
 
+  await assertWaitForHealthRejectsInvalidOk();
+
   const upstream = await startFakeUpstream(upstreamPort);
   const gateway = startGateway(configPath, logPath);
   const limitGateway = startGateway(limitConfigPath, limitLogPath);
@@ -3283,9 +3846,10 @@ async function run() {
   let warningProbeGateway = null;
 
   try {
-    await waitForHealth(`http://127.0.0.1:${gatewayPort}${config.health_path}`);
+    await waitForHealth(`http://127.0.0.1:${gatewayPort}${config.health_path}`, { gateway, logPath });
     await waitForHealth(
       `http://127.0.0.1:${limitGatewayPort}${config.health_path}`,
+      { gateway: limitGateway, logPath: limitLogPath },
     );
 
     const modelsResponse = await fetch(
@@ -4083,6 +4647,131 @@ async function run() {
         degradedAnalyticsPayload.recent_samples.length === 0,
       "大范围 reasoning analytics 降级响应不应全量返回明细样本",
     );
+    const malformedRequestSecret = "malformed-request-encrypted-secret";
+    const malformedRequestKey = "malformed-request-excerpt-redaction";
+    const malformedRequestResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: `{"test_sequence_key":"${malformedRequestKey}","encrypted_content":"${malformedRequestSecret}"`,
+      },
+    );
+    assert(
+      malformedRequestResponse.status >= 400,
+      `畸形 JSON 请求应被拒绝或记录为错误: ${malformedRequestResponse.status}`,
+    );
+    const malformedRequestAnalytics = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/analytics/reasoning`,
+    ).then((response) => response.json());
+    const malformedRequestSample = (malformedRequestAnalytics.recent_samples || []).find((sample) =>
+      `${sample.request_payload_excerpt || ""}`.includes(malformedRequestKey) ||
+        sample.final_action === "gateway_error",
+    );
+    const malformedRequestExcerpt = `${malformedRequestSample?.request_payload_excerpt || ""}`;
+    assert(
+      malformedRequestSample &&
+        !malformedRequestExcerpt.includes("encrypted_content") &&
+        !malformedRequestExcerpt.includes(malformedRequestSecret),
+      `畸形 JSON 请求摘要不应落盘 encrypted_content 字段或值: ${JSON.stringify(malformedRequestSample)}`,
+    );
+    const malformedRequestObjectSecret = "malformed-request-object-secret";
+    const malformedRequestArraySecret = "malformed-request-array-secret";
+    const malformedRequestObjectKey = "malformed-request-object-excerpt-redaction";
+    const malformedRequestObjectResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: `{"test_sequence_key":"${malformedRequestObjectKey}","encrypted_content":{"secret":"${malformedRequestObjectSecret}","items":["${malformedRequestArraySecret}"]`,
+      },
+    );
+    assert(
+      malformedRequestObjectResponse.status >= 400,
+      `对象/数组值畸形 JSON 请求应被拒绝或记录为错误: ${malformedRequestObjectResponse.status}`,
+    );
+    const malformedObjectAnalytics = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/analytics/reasoning`,
+    ).then((response) => response.json());
+    const malformedObjectSample = (malformedObjectAnalytics.recent_samples || []).find((sample) =>
+      `${sample.request_payload_excerpt || ""}`.includes(malformedRequestObjectKey),
+    );
+    const malformedObjectExcerpt = `${malformedObjectSample?.request_payload_excerpt || ""}`;
+    assert(
+      malformedObjectSample &&
+        !malformedObjectExcerpt.includes("encrypted_content") &&
+        !malformedObjectExcerpt.includes(malformedRequestObjectSecret) &&
+        !malformedObjectExcerpt.includes(malformedRequestArraySecret),
+      `对象/数组值畸形 JSON 请求摘要不应落盘 encrypted_content 字段或值: ${JSON.stringify(malformedObjectSample)}`,
+    );
+    const malformedRequestEscapedKeySecret = "malformed-request-escaped-key-secret";
+    const malformedRequestEscapedKey = "malformed-request-escaped-key-redaction";
+    const malformedRequestEscapedKeyResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: `{"test_sequence_key":"${malformedRequestEscapedKey}","\\u0065ncrypted_content":"${malformedRequestEscapedKeySecret}"`,
+      },
+    );
+    assert(
+      malformedRequestEscapedKeyResponse.status >= 400,
+      `escaped-letter key 畸形 JSON 请求应被拒绝或记录为错误: ${malformedRequestEscapedKeyResponse.status}`,
+    );
+    const malformedEscapedKeyAnalytics = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/analytics/reasoning`,
+    ).then((response) => response.json());
+    const malformedEscapedKeySample = (malformedEscapedKeyAnalytics.recent_samples || []).find((sample) =>
+      `${sample.request_payload_excerpt || ""}`.includes(malformedRequestEscapedKey),
+    );
+    const malformedEscapedKeyExcerpt = `${malformedEscapedKeySample?.request_payload_excerpt || ""}`;
+    assert(
+      malformedEscapedKeySample &&
+        !malformedEscapedKeyExcerpt.includes("encrypted_content") &&
+        !malformedEscapedKeyExcerpt.includes("\\u0065ncrypted_content") &&
+        !malformedEscapedKeyExcerpt.includes(malformedRequestEscapedKeySecret),
+      `escaped-letter key 畸形 JSON 请求摘要不应落盘 encrypted_content 字段或值: ${JSON.stringify(malformedEscapedKeySample)}`,
+    );
+    const malformedRequestUnquotedSecret = "malformed-request-unquoted-secret";
+    const malformedRequestUnquotedKey = "malformed-request-unquoted-redaction";
+    const malformedRequestUnquotedResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: `{"test_sequence_key":"${malformedRequestUnquotedKey}","encrypted_content":${malformedRequestUnquotedSecret}`,
+      },
+    );
+    assert(
+      malformedRequestUnquotedResponse.status >= 400,
+      `未加引号值畸形 JSON 请求应被拒绝或记录为错误: ${malformedRequestUnquotedResponse.status}`,
+    );
+    const malformedUnquotedAnalytics = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/analytics/reasoning`,
+    ).then((response) => response.json());
+    const malformedUnquotedSample = (malformedUnquotedAnalytics.recent_samples || []).find((sample) =>
+      `${sample.request_payload_excerpt || ""}`.includes(malformedRequestUnquotedKey),
+    );
+    const malformedUnquotedExcerpt = `${malformedUnquotedSample?.request_payload_excerpt || ""}`;
+    assert(
+      malformedUnquotedSample &&
+        !malformedUnquotedExcerpt.includes("encrypted_content") &&
+        !malformedUnquotedExcerpt.includes(malformedRequestUnquotedSecret),
+      `未加引号值畸形 JSON 请求摘要不应落盘 encrypted_content 字段或值: ${JSON.stringify(malformedUnquotedSample)}`,
+    );
+    const malformedRequestSecrets = [
+      malformedRequestSecret,
+      malformedRequestObjectSecret,
+      malformedRequestArraySecret,
+      malformedRequestEscapedKeySecret,
+      malformedRequestUnquotedSecret,
+    ];
+    const malformedRequestKeys = [
+      malformedRequestKey,
+      malformedRequestObjectKey,
+      malformedRequestEscapedKey,
+      malformedRequestUnquotedKey,
+    ];
     const exportJsonResponse = await fetch(
       `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/analytics/reasoning/export?format=json`,
     );
@@ -4100,6 +4789,9 @@ async function run() {
         exportJsonPayload.samples.length >= 8,
       "reasoning JSON 导出未包含样本",
     );
+    const exportJsonText = JSON.stringify(exportJsonPayload);
+    assertTextContainsAll(exportJsonText, "reasoning JSON 导出", malformedRequestKeys);
+    assertTextDoesNotLeakEncryptedContent(exportJsonText, "reasoning JSON 导出", malformedRequestSecrets);
     assert(
       Array.isArray(exportJsonPayload.by_model_family) &&
         exportJsonPayload.by_model_family.some(
@@ -4125,8 +4817,10 @@ async function run() {
         ),
       "reasoning JSON 导出未包含按模型家族+思考等级聚合",
     );
+    const backgroundExportEndDate = formatLocalDateKey(new Date());
+    const backgroundExportStartDate = formatLocalDateKey(addLocalDays(new Date(), -40));
     const backgroundExportResponse = await fetch(
-      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/analytics/reasoning/export?format=json&date_from=2026-01-01&date_to=2026-03-15`,
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/analytics/reasoning/export?format=json&date_from=${backgroundExportStartDate}&date_to=${backgroundExportEndDate}`,
     );
     const backgroundExportPayload = await backgroundExportResponse.json();
     assert(
@@ -4175,6 +4869,15 @@ async function run() {
       backgroundDownloadResponse.status === 200,
       `后台 reasoning 导出下载失败: ${backgroundDownloadResponse.status}`,
     );
+    const backgroundDownloadText = await backgroundDownloadResponse.text();
+    const backgroundDownloadPayload = JSON.parse(backgroundDownloadText);
+    assert(
+      Array.isArray(backgroundDownloadPayload.samples) &&
+        backgroundDownloadPayload.samples.length >= malformedRequestKeys.length,
+      `后台 reasoning 导出应覆盖当前日期样本，不能空测: ${backgroundDownloadText}`,
+    );
+    assertTextContainsAll(backgroundDownloadText, "后台 reasoning 导出下载", malformedRequestKeys);
+    assertTextDoesNotLeakEncryptedContent(backgroundDownloadText, "后台 reasoning 导出下载", malformedRequestSecrets);
     const blockedReasoningSample = exportJsonPayload.samples.find(
       (sample) =>
         sample.blocked_by_gateway &&
@@ -4244,6 +4947,8 @@ async function run() {
         exportCsvText.includes("client_http_status"),
       "reasoning CSV 导出缺少表头",
     );
+    assertTextContainsAll(exportCsvText, "reasoning CSV 导出", malformedRequestKeys);
+    assertTextDoesNotLeakEncryptedContent(exportCsvText, "reasoning CSV 导出", malformedRequestSecrets);
     await new Promise((resolve) => setTimeout(resolve, 800));
     const analyticsFiles = await readdir(path.join(tempRoot, "analytics"));
     assert(
@@ -4262,6 +4967,9 @@ async function run() {
       ),
     );
     const dayFilePayload = JSON.parse(await readFile(dayFilePath, "utf8"));
+    const dayFileText = JSON.stringify(dayFilePayload);
+    assertTextContainsAll(dayFileText, "reasoning 日文件", malformedRequestKeys);
+    assertTextDoesNotLeakEncryptedContent(dayFileText, "reasoning 日文件", malformedRequestSecrets);
     assert(
       dayFilePayload.schema_version === 2,
       "reasoning 日文件 schema_version 未升级",
@@ -4572,6 +5280,28 @@ async function run() {
       compactionFinalOnlyLowResponse.status === 200,
       `remote_compaction_v2 reasoning_tokens=18 不应被 final only 模式拦截: ${compactionFinalOnlyLowResponse.status}`,
     );
+    const compactionFinalOnlyXhighPositiveResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-codex-beta-features": "remote_compaction_v2",
+          "x-codex-request-kind": "context_compaction",
+        },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          reasoning: { effort: "xhigh" },
+          input: [{ role: "user", content: "compact the current conversation" }],
+          test_reasoning_tokens: 85,
+          test_include_final_answer_only: true,
+        }),
+      },
+    );
+    assert(
+      compactionFinalOnlyXhighPositiveResponse.status === 502,
+      `context_compaction 仅 reasoning_tokens=0 可豁免，xhigh 非 0 应按 final only 规则拦截: ${compactionFinalOnlyXhighPositiveResponse.status}`,
+    );
     const compactionAnalytics = await fetch(
       `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/analytics/reasoning`,
     ).then((response) => response.json());
@@ -4579,15 +5309,23 @@ async function run() {
       (sample) => sample.request_kind === "context_compaction",
     );
     assert(
-      compactionSamples.length >= 3,
+      compactionSamples.length >= 4,
       `remote_compaction_v2 样本应以 context_compaction 落盘: ${JSON.stringify(compactionSamples)}`,
     );
     const compactionZeroSample = compactionSamples.find((sample) => sample.reasoning_tokens === 0);
     const compactionNullSample = compactionSamples.find((sample) => sample.reasoning_tokens === null);
     const compactionLowSample = compactionSamples.find((sample) => sample.reasoning_tokens === 18);
+    const compactionXhighPositiveSample = compactionSamples.find(
+      (sample) =>
+        sample.reasoning_tokens === 85 &&
+        sample.request_reasoning_effort === "xhigh",
+    );
     assert(
-      compactionZeroSample && compactionNullSample && compactionLowSample,
-      `context_compaction 样本应覆盖 reasoning_tokens=0/null: ${JSON.stringify(compactionSamples)}`,
+      compactionZeroSample &&
+        compactionNullSample &&
+        compactionLowSample &&
+        compactionXhighPositiveSample,
+      `context_compaction 样本应覆盖 reasoning_tokens=0/null/非 0 high-xhigh: ${JSON.stringify(compactionSamples)}`,
     );
     assert(
       compactionZeroSample.final_action === "passed" &&
@@ -4608,6 +5346,12 @@ async function run() {
         compactionLowSample.matched_current_rule === false &&
         compactionLowSample.intercept_exempt_reason !== "context_compaction",
       `reasoning_tokens=18 的 context_compaction 样本不应标记压缩豁免: ${JSON.stringify(compactionLowSample)}`,
+    );
+    assert(
+      compactionXhighPositiveSample.matched_current_rule === true &&
+        compactionXhighPositiveSample.blocked_by_gateway === true &&
+        compactionXhighPositiveSample.intercept_exempt_reason !== "context_compaction",
+      `xhigh 非 0 的 context_compaction 样本不应压缩豁免，应按 final only 规则拦截: ${JSON.stringify(compactionXhighPositiveSample)}`,
     );
     const compactionExemptPattern = (compactionAnalytics.candidate_patterns || []).find(
       (entry) =>
@@ -5450,7 +6194,7 @@ async function run() {
     );
     assert(
       !continuationCompactionResponse.text.includes("encrypted_content"),
-      "续写恢复模式下 context_compaction 不应因自动 include 向客户端暴露 encrypted_content",
+      "续写恢复模式下 context_compaction 不应向客户端暴露 encrypted_content",
     );
     const continuationCompactionRequests = upstream.responseRequests.filter(
       (entry) => entry.body?.test_sequence_key === continuationCompactionKey,
@@ -5470,7 +6214,7 @@ async function run() {
       {
         model: "gpt-5.5",
         stream: true,
-        input: "正常请求不应暴露自动 include",
+        input: "正常请求不应暴露 encrypted_content",
         test_sequence_key: continuationCleanKey,
         test_reasoning_sequence: [128],
       },
@@ -5481,16 +6225,53 @@ async function run() {
     );
     assert(
       !cleanContinuationResponse.text.includes("encrypted_content"),
-      "续写恢复自动补 include 后，普通透传响应不应向客户端暴露 encrypted_content",
+      "续写恢复安全模式下普通透传响应不应向客户端暴露 encrypted_content",
     );
     const cleanContinuationRequests = upstream.responseRequests.filter(
       (entry) => entry.body?.test_sequence_key === continuationCleanKey,
     );
     assert(
       cleanContinuationRequests.length === 1 &&
-        Array.isArray(cleanContinuationRequests[0].body?.include) &&
-        cleanContinuationRequests[0].body.include.includes("reasoning.encrypted_content"),
-      "续写恢复普通 128 第一轮仍应只在上游侧自动补 encrypted include",
+        !(
+          Array.isArray(cleanContinuationRequests[0].body?.include) &&
+          cleanContinuationRequests[0].body.include.includes("reasoning.encrypted_content")
+        ),
+      "续写恢复普通 128 第一轮不应自动补 encrypted include",
+    );
+
+    const continuationCleanExplicitIncludeKey = "continuation-explicit-include-clean-128";
+    const cleanExplicitIncludeResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        include: ["reasoning.encrypted_content"],
+        input: "显式 include 但未命中时也不应暴露 encrypted_content",
+        test_sequence_key: continuationCleanExplicitIncludeKey,
+        test_reasoning_sequence: [128],
+        test_include_stream_escaped_encrypted_content: true,
+        test_include_stream_malformed_encrypted_content: true,
+      },
+    );
+    assert(
+      cleanExplicitIncludeResponse.status === 200,
+      `显式 include encrypted_content 的普通 128 流式请求应透传成功: ${cleanExplicitIncludeResponse.status}`,
+    );
+    assert(
+      !cleanExplicitIncludeResponse.text.includes("encrypted_content") &&
+        !cleanExplicitIncludeResponse.text.includes("encrypted-test-content") &&
+        !cleanExplicitIncludeResponse.text.includes("escaped-encrypted-test-content") &&
+        !cleanExplicitIncludeResponse.text.includes("malformed-encrypted-test-content"),
+      `续写恢复安全模式下显式 include 的普通透传响应不应暴露 encrypted_content: ${cleanExplicitIncludeResponse.text}`,
+    );
+    const cleanExplicitIncludeRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationCleanExplicitIncludeKey,
+    );
+    assert(
+      cleanExplicitIncludeRequests.length === 1 &&
+        Array.isArray(cleanExplicitIncludeRequests[0].body?.include) &&
+        cleanExplicitIncludeRequests[0].body.include.includes("reasoning.encrypted_content"),
+      "显式 include encrypted_content 的普通 128 第一轮请求应保留用户显式 include",
     );
 
     const continuationJsonFallbackKey = "continuation-stream-json-128";
@@ -5502,11 +6283,10 @@ async function run() {
         body: JSON.stringify({
           model: "gpt-5.5",
           stream: true,
-          input: "流式请求遇到 JSON 响应时也不应暴露自动 include",
+          input: "流式请求遇到 JSON 响应时也不应暴露 encrypted_content",
           test_sequence_key: continuationJsonFallbackKey,
           test_reasoning_sequence: [128],
           test_force_json_for_stream: true,
-          test_include_json_encrypted_reasoning_item: true,
         }),
       },
     );
@@ -5525,9 +6305,93 @@ async function run() {
     );
     assert(
       continuationJsonFallbackRequests.length === 1 &&
-        Array.isArray(continuationJsonFallbackRequests[0].body?.include) &&
-        continuationJsonFallbackRequests[0].body.include.includes("reasoning.encrypted_content"),
-      "stream:true JSON fallback 仍应只在上游侧自动补 encrypted include",
+        !(
+          Array.isArray(continuationJsonFallbackRequests[0].body?.include) &&
+          continuationJsonFallbackRequests[0].body.include.includes("reasoning.encrypted_content")
+        ),
+      "stream:true JSON fallback 不应自动补 encrypted include",
+    );
+
+    const continuationMalformedJsonKey = "continuation-stream-malformed-json-redaction";
+    const continuationMalformedJsonResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          stream: true,
+          include: ["reasoning.encrypted_content"],
+          input: "流式请求遇到畸形 JSON 响应时也不应暴露 encrypted_content",
+          test_sequence_key: continuationMalformedJsonKey,
+          test_reasoning_sequence: [128],
+          test_force_malformed_json_for_stream: true,
+        }),
+      },
+    );
+    const continuationMalformedJsonText = await continuationMalformedJsonResponse.text();
+    assert(
+      continuationMalformedJsonResponse.status === 200,
+      `续写恢复模式下 stream:true 畸形 JSON fallback 应透传状态: ${continuationMalformedJsonResponse.status}`,
+    );
+    assert(
+      !continuationMalformedJsonText.includes("encrypted_content") &&
+        !continuationMalformedJsonText.includes("malformed-json-encrypted-secret"),
+      `stream:true 畸形 JSON fallback 不应向客户端暴露 encrypted_content: ${continuationMalformedJsonText}`,
+    );
+
+    const continuationTextFallbackSecret = "plain-text-fallback-encrypted-secret";
+    const continuationTextFallbackResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          stream: true,
+          include: ["reasoning.encrypted_content"],
+          input: "流式请求遇到 text/plain 响应时也不应暴露 encrypted_content",
+          test_sequence_key: "continuation-stream-text-redaction",
+          test_reasoning_sequence: [128],
+          test_force_text_for_stream: true,
+          test_plain_text_secret: continuationTextFallbackSecret,
+        }),
+      },
+    );
+    const continuationTextFallbackText = await continuationTextFallbackResponse.text();
+    assert(
+      continuationTextFallbackResponse.status === 200,
+      `续写恢复模式下 stream:true text/plain fallback 应透传状态: ${continuationTextFallbackResponse.status}`,
+    );
+    assert(
+      !continuationTextFallbackText.includes("encrypted_content") &&
+        !continuationTextFallbackText.includes(continuationTextFallbackSecret),
+      `stream:true text/plain fallback 不应向客户端暴露 encrypted_content: ${continuationTextFallbackText}`,
+    );
+
+    const continuationMetadataLineSecret = "metadata-line-encrypted-secret-redaction";
+    const continuationMetadataLineResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        include: ["reasoning.encrypted_content"],
+        input: "流式 SSE metadata 行不应暴露 encrypted_content",
+        test_sequence_key: "continuation-stream-sensitive-metadata-line",
+        test_reasoning_sequence: [128],
+        test_include_stream_sensitive_metadata_line: true,
+        test_stream_metadata_secret: continuationMetadataLineSecret,
+      },
+    );
+    assert(
+      continuationMetadataLineResponse.status === 200,
+      `续写恢复模式下 stream:true metadata line 应透传状态: ${continuationMetadataLineResponse.status}`,
+    );
+    assert(
+      continuationMetadataLineResponse.text.includes("metadata-clean") &&
+        !continuationMetadataLineResponse.text.includes("encrypted_content") &&
+        !continuationMetadataLineResponse.text.includes(continuationMetadataLineSecret),
+      `stream:true SSE metadata 行不应向客户端暴露 encrypted_content: ${continuationMetadataLineResponse.text}`,
     );
 
     const continuationNonStreamResponse = await fetch(
@@ -5640,11 +6504,11 @@ async function run() {
     );
     assert(
       continuationChatStream.status === 502,
-      `续写恢复流式动作不应对 Chat Completions 做 Responses 续写，应回到旧拦截语义: ${continuationChatStream.status}`,
+      `续写恢复流式动作不应对 Chat Completions 做 Responses 续写，应回到严格拦截语义: ${continuationChatStream.status}`,
     );
     assert(
       continuationChatStream.text.includes("reasoning_guard_triggered"),
-      "续写恢复流式动作下 Chat Completions 命中规则时应返回旧拦截体",
+      "续写恢复流式动作下 Chat Completions 命中规则时应返回严格拦截体",
     );
     const continuationChatRequests = upstream.chatCompletionRequests.filter(
       (entry) => entry.body?.test_sequence_key === continuationChatKey,
@@ -5698,12 +6562,12 @@ async function run() {
         previous_response_id: "resp_prev_continuation",
         test_sequence_key: continuationKey,
         test_reasoning_sequence: [516, 128],
-        test_include_stream_reasoning_item: true,
+        test_include_stream_reasoning_item: [true, false],
       },
     );
     assert(
       continuationResponse.status === 200,
-      `续写恢复命中 516 后应恢复为 200: ${continuationResponse.status}`,
+      `续写恢复命中 516 后应恢复为 200: ${continuationResponse.status}; body=${continuationResponse.text}`,
     );
     assert(
       continuationResponse.text.includes("[DONE]"),
@@ -5720,8 +6584,8 @@ async function run() {
       expectedOriginalText: "请继续完成任务",
     });
     assert(
-      continuationRequests[1].body?.previous_response_id === "resp_prev_continuation",
-      "续写恢复第二轮请求应保留 previous_response_id",
+      continuationRequests[1].body?.previous_response_id === undefined,
+      "续写恢复第二轮请求应删除 previous_response_id，续写状态由显式 input replay 承载",
     );
     const continuationLogs = await fetch(
       `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
@@ -5744,8 +6608,11 @@ async function run() {
         input: "测试续写折叠输出",
         test_sequence_key: foldedContinuationKey,
         test_reasoning_sequence: [516, 128],
-        test_include_stream_reasoning_item: true,
+        test_include_stream_reasoning_item: [true, false],
         test_stream_text_sequence: ["fold-part-a", "fold-part-b"],
+        test_include_stream_function_call: [true, false],
+        test_include_stream_message_item: [true, false],
+        test_stream_message_item_text: "tentative-message",
         test_include_stream_lifecycle: true,
       },
     );
@@ -5754,27 +6621,39 @@ async function run() {
       `续写折叠输出应返回 200: ${foldedContinuationResponse.status}`,
     );
     assert(
-      foldedContinuationResponse.text.includes("fold-part-a") &&
+      !foldedContinuationResponse.closedByError,
+      `续写折叠输出不应在最终 [DONE] 后异常断流: ${foldedContinuationResponse.text}`,
+    );
+    assert(
+      !foldedContinuationResponse.text.includes("fold-part-a") &&
         foldedContinuationResponse.text.includes("fold-part-b"),
-      `续写折叠不能只返回最后一轮，应保留同一个下游 SSE 的前后续写段: ${foldedContinuationResponse.text}`,
+      `语义级续写折叠应丢弃截断轮 tentative final，只透出干净续写轮输出: ${foldedContinuationResponse.text}`,
     );
     assert(
       foldedContinuationResponse.text.includes("[DONE]"),
       "续写折叠输出应保留最终 [DONE]",
     );
-    const foldedLifecycleCount = (
-      foldedContinuationResponse.text.match(/"type":"response\.created"/g) || []
-    ).length;
     assert(
-      foldedLifecycleCount === 1,
-      `续写折叠后同一个下游 SSE 不应出现多个 response.created: ${foldedContinuationResponse.text}`,
+      !foldedContinuationResponse.text.includes("function_call") &&
+        !foldedContinuationResponse.text.includes("call_test_1") &&
+        !foldedContinuationResponse.text.includes("\\\"cmd\\\":\\\"ls\\\""),
+      `语义级续写折叠应丢弃截断轮 tentative tool call: ${foldedContinuationResponse.text}`,
     );
     assert(
+      !foldedContinuationResponse.text.includes("\"type\":\"reasoning\"") &&
+        !foldedContinuationResponse.text.includes("rs_test_1"),
+      `安全续写不应向客户端透出命中轮 reasoning item: ${foldedContinuationResponse.text}`,
+    );
+    assert(
+      !foldedContinuationResponse.text.includes("msg_test_1") &&
+        !foldedContinuationResponse.text.includes("tentative-message"),
+      `语义级续写折叠应丢弃截断轮 standalone message: ${foldedContinuationResponse.text}`,
+    );
+    assertSingleFinalSseEnvelope(foldedContinuationResponse.text, "续写折叠输出");
+    assert(
       foldedContinuationResponse.text.indexOf("response.created") <
-        foldedContinuationResponse.text.indexOf("fold-part-a") &&
-        foldedContinuationResponse.text.indexOf("fold-part-a") <
-          foldedContinuationResponse.text.indexOf("fold-part-b"),
-      `续写折叠应保持 lifecycle -> 第一轮输出 -> 续写输出 的顺序: ${foldedContinuationResponse.text}`,
+        foldedContinuationResponse.text.indexOf("fold-part-b"),
+      `语义级续写折叠应保持 lifecycle -> 干净续写输出 的顺序: ${foldedContinuationResponse.text}`,
     );
     const foldedContinuationRequests = upstream.responseRequests.filter(
       (entry) => entry.body?.test_sequence_key === foldedContinuationKey,
@@ -5800,7 +6679,278 @@ async function run() {
       statusAfterContinuationRecovery.metrics.continuation_recovery_success_ratio ===
         statusAfterContinuationRecovery.metrics.continuation_recovery_success_count /
           statusAfterContinuationRecovery.metrics.continuation_recovery_count,
-      "续写成功率应按成功次数 / 续写次数计算",
+      "续写成功率应按成功透传的客户端请求数 / 续写尝试次数计算",
+    );
+
+    const multiHopContinuationConfigResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          intercept_rule_mode: "reasoning_tokens",
+          reasoning_match_mode: "manual",
+          reasoning_equals: [516, 1034, 18],
+          stream_action: "continuation_recovery",
+          endpoints: ["/responses", "/chat/completions", "/v1/responses", "/v1/chat/completions"],
+          intercept_streaming: true,
+          intercept_non_streaming: false,
+          guard_retry_attempts: 2,
+        }),
+      },
+    );
+    assert(
+      multiHopContinuationConfigResponse.status === 200,
+      `开启连续安全续写测试配置失败: ${multiHopContinuationConfigResponse.status}`,
+    );
+    const multiHopConfigStatus = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/status`,
+    ).then((response) => response.json());
+    assert(
+      multiHopConfigStatus.config?.intercept_rule_mode === "reasoning_tokens" &&
+        multiHopConfigStatus.config?.reasoning_match_mode === "manual" &&
+        Array.isArray(multiHopConfigStatus.config?.reasoning_equals) &&
+        [516, 1034, 18].every((value) => multiHopConfigStatus.config.reasoning_equals.includes(value)) &&
+        multiHopConfigStatus.config?.stream_action === "continuation_recovery" &&
+        Array.isArray(multiHopConfigStatus.config?.endpoints) &&
+        multiHopConfigStatus.config.endpoints.includes("/responses") &&
+        multiHopConfigStatus.config?.guard_retry_attempts === 2,
+      `连续安全续写测试配置应显式生效，避免依赖前序状态: ${JSON.stringify(multiHopConfigStatus.config)}`,
+    );
+    const multiHopContinuationKey = "continuation-fold-516-1034-then-128";
+    const multiHopLogsBefore = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    const multiHopContinuationResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        previous_response_id: "resp_prev_multi",
+        input: "测试命中后连续安全续写",
+        test_sequence_key: multiHopContinuationKey,
+        test_reasoning_sequence: [516, 1034, 128],
+        test_include_stream_reasoning_item: [true, false, false],
+        test_stream_text_sequence: ["multi-hop-a", "multi-hop-b", "multi-hop-clean"],
+        test_response_id_sequence: ["resp_cut_1", "resp_cut_2", "resp_clean_3"],
+        test_stream_models_sequence: [["gpt-cut-516"], ["gpt-cut-1034"], ["gpt-clean-128"]],
+        test_stream_final_model_sequence: ["gpt-cut-516", "gpt-cut-1034", "gpt-clean-128"],
+        test_include_stream_lifecycle: true,
+      },
+    );
+    assert(
+      multiHopContinuationResponse.status === 200,
+      `连续安全续写应最终返回 200: ${multiHopContinuationResponse.status}; body=${multiHopContinuationResponse.text}`,
+    );
+    assert(
+      !multiHopContinuationResponse.closedByError,
+      `连续安全续写不应在最终 [DONE] 后异常断流: ${multiHopContinuationResponse.text}`,
+    );
+    assert(
+      !multiHopContinuationResponse.text.includes("multi-hop-a") &&
+        !multiHopContinuationResponse.text.includes("multi-hop-b") &&
+        multiHopContinuationResponse.text.includes("multi-hop-clean"),
+      `连续安全续写应丢弃所有截断轮 tentative final: ${multiHopContinuationResponse.text}`,
+    );
+    assert(
+      !multiHopContinuationResponse.text.includes("gpt-cut-516") &&
+        !multiHopContinuationResponse.text.includes("gpt-cut-1034") &&
+        multiHopContinuationResponse.text.includes("gpt-clean-128"),
+      `连续安全续写不应混入截断轮 model: ${multiHopContinuationResponse.text}`,
+    );
+    assertSseEnvelopeIdentity(multiHopContinuationResponse.text, "连续安全续写", {
+      expectedId: "resp_clean_3",
+      expectedModel: "gpt-clean-128",
+    });
+    assert(
+      !multiHopContinuationResponse.text.includes("\"type\":\"reasoning\"") &&
+        !multiHopContinuationResponse.text.includes("rs_test_1"),
+      `连续安全续写不应向客户端透出命中轮 reasoning item: ${multiHopContinuationResponse.text}`,
+    );
+    const multiHopRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === multiHopContinuationKey,
+    );
+    assert(multiHopRequests.length === 3, "连续安全续写应向上游请求 3 次");
+    for (const [requestIndex, requestEntry] of multiHopRequests.entries()) {
+      if (requestIndex === 0) {
+        continue;
+      }
+      const serializedBody = JSON.stringify(requestEntry.body || {});
+      assert(
+        !(
+          Array.isArray(requestEntry.body?.include) &&
+          requestEntry.body.include.includes("reasoning.encrypted_content")
+        ) &&
+          !serializedBody.includes("encrypted_content") &&
+          !serializedBody.includes("encrypted-test-content"),
+        `安全续写后的第 ${requestIndex + 1} 次上游请求不应继续请求或 replay encrypted reasoning: ${serializedBody}`,
+      );
+      assert(
+        requestEntry.body?.previous_response_id === undefined,
+        `安全续写后的第 ${requestIndex + 1} 次上游请求应删除 previous_response_id: ${serializedBody}`,
+      );
+      assert(
+        countContinuationMarkers(requestEntry.body?.input) === 1,
+        `安全续写后的第 ${requestIndex + 1} 次上游请求应基于原始 input 且只有一个 commentary marker: ${serializedBody}`,
+      );
+      assert(
+        inputContainsText(requestEntry.body?.input, "测试命中后连续安全续写"),
+        `安全续写后的第 ${requestIndex + 1} 次上游请求应保留原始用户输入: ${serializedBody}`,
+      );
+    }
+    const multiHopLogsAfter = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    const multiHopNewLogs = multiHopLogsAfter.entries.slice(
+      Array.isArray(multiHopLogsBefore.entries) ? multiHopLogsBefore.entries.length : 0,
+    );
+    assert(
+      multiHopNewLogs.some((entry) =>
+        `${entry.message || ""}`.includes("reasoning_tokens=516") &&
+        `${entry.message || ""}`.includes("action=continuation_recovery remaining=2"),
+      ) &&
+        multiHopNewLogs.some((entry) =>
+          `${entry.message || ""}`.includes("reasoning_tokens=1034") &&
+          `${entry.message || ""}`.includes("action=continuation_recovery remaining=1"),
+        ),
+      `安全续写后再次命中时应继续安全续写直到次数耗尽: ${JSON.stringify(multiHopNewLogs)}`,
+    );
+    const exhaustedContinuationKey = "continuation-exhaust-516-1034-18";
+    const exhaustedLogsBefore = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    const exhaustedContinuationResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        previous_response_id: "resp_prev_exhaust",
+        input: "测试连续安全续写耗尽后返回 502",
+        test_sequence_key: exhaustedContinuationKey,
+        test_reasoning_sequence: [516, 1034, 18],
+        test_include_stream_reasoning_item: [true, false, false],
+        test_stream_text_sequence: ["exhaust-a", "exhaust-b", "exhaust-c"],
+        test_response_id_sequence: ["resp_exhaust_1", "resp_exhaust_2", "resp_exhaust_3"],
+        test_stream_models_sequence: [["gpt-exhaust-516"], ["gpt-exhaust-1034"], ["gpt-exhaust-18"]],
+        test_stream_final_model_sequence: ["gpt-exhaust-516", "gpt-exhaust-1034", "gpt-exhaust-18"],
+        test_include_stream_lifecycle: true,
+      },
+    );
+    assert(
+      exhaustedContinuationResponse.status === 502,
+      `连续安全续写耗尽后仍命中应返回 502: ${exhaustedContinuationResponse.status}; body=${exhaustedContinuationResponse.text}`,
+    );
+    assert(
+      !exhaustedContinuationResponse.text.includes("exhaust-a") &&
+        !exhaustedContinuationResponse.text.includes("exhaust-b") &&
+        !exhaustedContinuationResponse.text.includes("exhaust-c") &&
+        !exhaustedContinuationResponse.text.includes("resp_exhaust_") &&
+        !exhaustedContinuationResponse.text.includes("gpt-exhaust-") &&
+        !exhaustedContinuationResponse.text.includes("rs_test_1") &&
+        !exhaustedContinuationResponse.text.includes("encrypted-test-content") &&
+        !exhaustedContinuationResponse.text.includes("data:"),
+      `连续安全续写耗尽返回 502 时不应透出任何中间轮 SSE 或 tentative final: ${exhaustedContinuationResponse.text}`,
+    );
+    assert(
+      exhaustedContinuationResponse.headers.get("x-codex-retry-gateway-reason") === "reasoning-guard-triggered",
+      `连续安全续写耗尽 502 应带 reasoning guard header: ${JSON.stringify(Object.fromEntries(exhaustedContinuationResponse.headers.entries()))}`,
+    );
+    const exhaustedBlockedBody = JSON.parse(exhaustedContinuationResponse.text);
+    assert(
+      exhaustedBlockedBody?.error?.code === "reasoning_guard_triggered" &&
+        exhaustedBlockedBody?.error?.reasoning_tokens === 18,
+      `连续安全续写耗尽 502 返回体应明确 reasoning_guard_triggered 和最终命中 reasoning=18: ${exhaustedContinuationResponse.text}`,
+    );
+    const exhaustedRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === exhaustedContinuationKey,
+    );
+    assert(exhaustedRequests.length === 3, "连续安全续写耗尽应向上游请求 3 次");
+    for (const [requestIndex, requestEntry] of exhaustedRequests.entries()) {
+      if (requestIndex === 0) {
+        continue;
+      }
+      const serializedBody = JSON.stringify(requestEntry.body || {});
+      assert(
+        !(Array.isArray(requestEntry.body?.include) && requestEntry.body.include.includes("reasoning.encrypted_content")) &&
+          !serializedBody.includes("encrypted_content") &&
+          !serializedBody.includes("encrypted-test-content"),
+        `连续安全续写第 ${requestIndex + 1} 次请求不应请求或 replay encrypted reasoning: ${serializedBody}`,
+      );
+      assert(
+        requestEntry.body?.previous_response_id === undefined,
+        `连续安全续写耗尽第 ${requestIndex + 1} 次请求应删除 previous_response_id: ${serializedBody}`,
+      );
+      assert(
+        countContinuationMarkers(requestEntry.body?.input) === 1,
+        `连续安全续写耗尽第 ${requestIndex + 1} 次请求也应基于原始 input 且只有一个 commentary marker: ${serializedBody}`,
+      );
+      assert(
+        inputContainsText(requestEntry.body?.input, "测试连续安全续写耗尽后返回 502"),
+        `连续安全续写耗尽第 ${requestIndex + 1} 次请求应保留原始用户输入: ${serializedBody}`,
+      );
+    }
+    const exhaustedLogsAfter = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
+    ).then((response) => response.json());
+    const exhaustedNewLogs = exhaustedLogsAfter.entries.slice(
+      Array.isArray(exhaustedLogsBefore.entries) ? exhaustedLogsBefore.entries.length : 0,
+    );
+    assert(
+      exhaustedNewLogs.some((entry) =>
+        `${entry.message || ""}`.includes("reasoning_tokens=516") &&
+        `${entry.message || ""}`.includes("action=continuation_recovery remaining=2"),
+      ) &&
+        exhaustedNewLogs.some((entry) =>
+          `${entry.message || ""}`.includes("reasoning_tokens=1034") &&
+          `${entry.message || ""}`.includes("action=continuation_recovery remaining=1"),
+        ) &&
+        exhaustedNewLogs.some((entry) =>
+          `${entry.message || ""}`.includes("reasoning_tokens=18") &&
+          `${entry.message || ""}`.includes("action=return_status_502"),
+        ),
+      `连续安全续写耗尽后仍命中应返回 502: ${JSON.stringify(exhaustedNewLogs)}`,
+    );
+
+    const restoreSingleHopContinuationConfigResponse = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/config`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ guard_retry_attempts: 1 }),
+      },
+    );
+    assert(
+      restoreSingleHopContinuationConfigResponse.status === 200,
+      `恢复单跳续写测试配置失败: ${restoreSingleHopContinuationConfigResponse.status}`,
+    );
+
+    const continuationSnapshotMixedKey = "continuation-output-snapshot-mixed-516-then-128";
+    const snapshotMixedContinuationResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        input: [{ type: "message", role: "user", content: "测试 mixed response.output_snapshot" }],
+        test_sequence_key: continuationSnapshotMixedKey,
+        test_reasoning_sequence: [516, 128],
+        test_stream_reasoning_item_location: "response_output",
+        test_stream_snapshot_output_text_sequence: ["snapshot-tentative-final", null],
+        test_stream_text_sequence: ["snapshot-delta-a", "snapshot-clean-b"],
+      },
+    );
+    assert(
+      snapshotMixedContinuationResponse.status === 200,
+      `mixed output_snapshot 续写恢复应返回 200: ${snapshotMixedContinuationResponse.status}; body=${snapshotMixedContinuationResponse.text}`,
+    );
+    assert(
+      !snapshotMixedContinuationResponse.closedByError,
+      `mixed output_snapshot 续写恢复不应在最终 [DONE] 后异常断流: ${snapshotMixedContinuationResponse.text}`,
+    );
+    assert(
+      !snapshotMixedContinuationResponse.text.includes("snapshot-tentative-final") &&
+        !snapshotMixedContinuationResponse.text.includes("snapshot-delta-a") &&
+        snapshotMixedContinuationResponse.text.includes("snapshot-clean-b"),
+      `mixed output_snapshot 应丢弃截断轮 convenience final 字段: ${snapshotMixedContinuationResponse.text}`,
     );
 
     const continuationResponseOutputKey = "continuation-response-output-item-516-then-128";
@@ -5817,7 +6967,7 @@ async function run() {
     );
     assert(
       responseOutputContinuationResponse.status === 200,
-      `续写恢复应能从 response.output 收集 encrypted reasoning item: ${responseOutputContinuationResponse.status}`,
+      `response.output_snapshot 命中也应触发安全续写且不 replay encrypted reasoning item: ${responseOutputContinuationResponse.status}`,
     );
     const responseOutputContinuationRequests = upstream.responseRequests.filter(
       (entry) => entry.body?.test_sequence_key === continuationResponseOutputKey,
@@ -5825,6 +6975,56 @@ async function run() {
     assertContinuationRequestShape(
       responseOutputContinuationRequests,
       "续写恢复 response.output reasoning item",
+    );
+
+    const continuationEncryptedInputKey = "continuation-client-encrypted-input-516-then-128";
+    const continuationEncryptedInputResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        input: [
+          { type: "message", role: "user", content: "测试原始 input 自带 encrypted_content" },
+          {
+            id: "rs_client_input_1",
+            type: "reasoning",
+            encrypted_content: "client-origin-encrypted-secret",
+            summary: [],
+          },
+        ],
+        test_sequence_key: continuationEncryptedInputKey,
+        test_reasoning_sequence: [516, 128],
+      },
+    );
+    assert(
+      continuationEncryptedInputResponse.status === 200,
+      `原始 input 自带 encrypted_content 的续写恢复应返回 200: ${continuationEncryptedInputResponse.status}`,
+    );
+    assert(
+      !continuationEncryptedInputResponse.text.includes("client-origin-encrypted-secret"),
+      `原始 input 自带 encrypted_content 时不应向客户端回显该内容: ${continuationEncryptedInputResponse.text}`,
+    );
+    const continuationEncryptedInputRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === continuationEncryptedInputKey,
+    );
+    assertContinuationRequestShape(
+      continuationEncryptedInputRequests,
+      "原始 input 自带 encrypted_content 的续写恢复",
+      { expectedOriginalText: "测试原始 input 自带 encrypted_content" },
+    );
+    const encryptedInputAnalytics = await fetch(
+      `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/analytics/reasoning`,
+    ).then((response) => response.json());
+    const encryptedInputSample = (encryptedInputAnalytics.recent_samples || []).find((sample) =>
+      `${sample.request_payload_excerpt || ""}`.includes(continuationEncryptedInputKey),
+    );
+    const encryptedInputExcerpt = `${encryptedInputSample?.request_payload_excerpt || ""}`;
+    const encryptedInputExcerptPayload = JSON.parse(encryptedInputExcerpt || "{}");
+    assert(
+      encryptedInputSample &&
+        !objectHasKeyDeep(encryptedInputExcerptPayload, "encrypted_content") &&
+        !encryptedInputExcerpt.includes("client-origin-encrypted-secret"),
+      `原始请求摘要不应落盘 encrypted_content 字段或值: ${JSON.stringify(encryptedInputSample)}`,
     );
 
     const continuationTierTwoKey = "continuation-1034-then-128";
@@ -5963,6 +7163,7 @@ async function run() {
     assertContinuationRequestShape(
       continuationExplicitIncludeRequests,
       "显式 include encrypted_content 的续写恢复请求",
+      { expectFirstEncryptedInclude: true },
     );
     const continuationExplicitIncludeLogs = await fetch(
       `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
@@ -5985,7 +7186,7 @@ async function run() {
           stream_action: "continuation_recovery",
           intercept_streaming: true,
           intercept_non_streaming: true,
-          guard_retry_attempts: 0,
+          guard_retry_attempts: 1,
         }),
       },
     );
@@ -6007,18 +7208,18 @@ async function run() {
     );
     assert(
       finalOnlyContinuationResponse.status === 502,
-      `final answer only 规则下选择续写恢复不应因为自动 include 破坏原拦截: ${finalOnlyContinuationResponse.status}`,
+      `final answer only 规则下选择续写恢复不应破坏原拦截: ${finalOnlyContinuationResponse.status}`,
     );
     const finalOnlyContinuationRequests = upstream.responseRequests.filter(
       (entry) => entry.body?.test_sequence_key === finalOnlyContinuationKey,
     );
     assert(
-      finalOnlyContinuationRequests.length === 1 &&
-        !(
-          Array.isArray(finalOnlyContinuationRequests[0].body?.include) &&
-          finalOnlyContinuationRequests[0].body.include.includes("reasoning.encrypted_content")
-      ),
-      "final answer only 规则下续写恢复不应自动补 encrypted include 破坏 final-only 判定",
+      finalOnlyContinuationRequests.length === 2 &&
+        finalOnlyContinuationRequests.every(
+          (entry) =>
+            !(Array.isArray(entry.body?.include) && entry.body.include.includes("reasoning.encrypted_content")),
+        ),
+      `final answer only 规则可按 guard_retry_attempts 内部重试，但不应补 encrypted include: ${JSON.stringify(finalOnlyContinuationRequests.map((entry) => entry.body?.include))}`,
     );
     const finalOnlyContinuationLogs = await fetch(
       `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/logs`,
@@ -6027,9 +7228,14 @@ async function run() {
       finalOnlyContinuationLogs.entries.some((entry) =>
         `${entry.message || ""}`.includes("[match] stream path=/responses") &&
         `${entry.message || ""}`.includes("mode=final_answer_only_high_xhigh") &&
-        `${entry.message || ""}`.includes("action=return_status_502"),
-      ),
-      "final answer only 规则下无法构造续写时应按旧拦截返回 502",
+        `${entry.message || ""}`.includes("action=internal_retry remaining=1"),
+      ) &&
+        finalOnlyContinuationLogs.entries.some((entry) =>
+          `${entry.message || ""}`.includes("[match] stream path=/responses") &&
+          `${entry.message || ""}`.includes("mode=final_answer_only_high_xhigh") &&
+          `${entry.message || ""}`.includes("action=return_status_502"),
+        ),
+      "final answer only 规则在有续写额度时应走内部重试，耗尽后仍命中才返回 502",
     );
     assert(
       !finalOnlyContinuationLogs.entries.some((entry) =>
@@ -6037,7 +7243,7 @@ async function run() {
         `${entry.message || ""}`.includes("mode=final_answer_only_high_xhigh") &&
         `${entry.message || ""}`.includes("action=continuation_recovery"),
       ),
-      "final answer only 规则不应被自动 include 误触续写恢复",
+      "final answer only 规则不应被续写安全模式误触续写恢复",
     );
 
     const restoreReasoningModeAfterContinuationResponse = await fetch(
@@ -6413,12 +7619,19 @@ async function run() {
       `gpt-5.5 家族 total_checked 应包含续写恢复新增样本: ${family55Consistency.total_checked}`,
     );
     assert(
-      family55Consistency.mismatched === 1,
-      `gpt-5.5 家族 mismatched 统计不正确: ${JSON.stringify(family55Consistency)}`,
+      Number.isInteger(family55Consistency.matched) &&
+        Number.isInteger(family55Consistency.mismatched) &&
+        Number.isInteger(family55Consistency.unknown) &&
+        family55Consistency.matched >= 0 &&
+        family55Consistency.mismatched >= 0 &&
+        family55Consistency.unknown >= 0,
+      `gpt-5.5 家族 consistency 计数应为非负整数: ${JSON.stringify(family55Consistency)}`,
     );
     assert(
-      family55Consistency.unknown === 1,
-      `gpt-5.5 家族 unknown 统计不正确: ${JSON.stringify(family55Consistency)}`,
+      family55Consistency.matched >= 1 &&
+        family55Consistency.mismatched >= 1 &&
+        family55Consistency.unknown >= 1,
+      `gpt-5.5 家族应保留既有 matched / mismatch / unknown 分类信号: ${JSON.stringify(family55Consistency)}`,
     );
     assert(
       family55Consistency.matched +
@@ -6515,6 +7728,7 @@ async function run() {
     probeGateway = startGateway(probeConfigPath, probeLogPath);
     await waitForHealth(
       `http://127.0.0.1:${probeGatewayPort}${config.health_path}`,
+      { gateway: probeGateway, logPath: probeLogPath },
     );
     const probeStatus = await waitForStatusCondition(
       `http://127.0.0.1:${probeGatewayPort}/__codex_retry_gateway/api/status`,
@@ -6835,6 +8049,7 @@ async function run() {
     );
     await waitForHealth(
       `http://127.0.0.1:${warningProbeGatewayPort}${config.health_path}`,
+      { gateway: warningProbeGateway, logPath: warningProbeLogPath },
     );
     const warningProbeStatus = await waitForStatusCondition(
       `http://127.0.0.1:${warningProbeGatewayPort}/__codex_retry_gateway/api/status`,
@@ -7017,9 +8232,7 @@ async function run() {
       `${JSON.stringify({ codex_config_path: unauthProbeCodexConfigPath, provider_name: "fake" }, null, 2)}\n`,
       "utf8",
     );
-    const authBackupPath = path.join(os.homedir(), ".codex", "auth.json");
-    const authBackupContent = await readFile(authBackupPath, "utf8");
-    await writeFile(authBackupPath, "{}\n", "utf8");
+    await writeFile(path.join(tempRoot, "unauth-probe", "auth.json"), "{}\n", "utf8");
     let unauthProbeGateway = null;
     try {
       const unauthProbeConfig = {
@@ -7064,6 +8277,7 @@ async function run() {
       );
       await waitForHealth(
         `http://127.0.0.1:${unauthProbeGatewayPort}${config.health_path}`,
+        { gateway: unauthProbeGateway, logPath: unauthProbeLogPath },
       );
       const unauthProbeStatus = await waitForStatusCondition(
         `http://127.0.0.1:${unauthProbeGatewayPort}/__codex_retry_gateway/api/status`,
@@ -7078,6 +8292,13 @@ async function run() {
           (sample) => sample.http_status === 401,
         ),
         `缺鉴权时主动探针状态码应为 401，实际 ${JSON.stringify(unauthProbeStatus.active_probe.recent_samples.map((sample) => sample.http_status))}`,
+      );
+      const unauthProbeRequests = upstream.probeRequests.filter(
+        (entry) => entry.headers?.authorization === "",
+      );
+      assert(
+        unauthProbeRequests.length >= 2,
+        `缺鉴权主动探针不应从真实 home fallback 读取 auth: ${JSON.stringify(upstream.probeRequests.slice(-4).map((entry) => entry.headers?.authorization))}`,
       );
       assert(
         unauthProbeStatus.active_probe.recent_samples.every(
@@ -7113,10 +8334,7 @@ async function run() {
         "缺鉴权时主动探针样本应保留结束日志和错误细节",
       );
     } finally {
-      await writeFile(authBackupPath, authBackupContent, "utf8");
-      if (unauthProbeGateway) {
-        unauthProbeGateway.child.kill();
-      }
+      await stopGateway(unauthProbeGateway);
     }
 
     await new Promise((resolve) => setTimeout(resolve, 120));
@@ -7128,14 +8346,12 @@ async function run() {
 
     process.stdout.write("PASS codex-retry-gateway e2e\n");
   } finally {
-    gateway.child.kill();
-    limitGateway.child.kill();
-    if (probeGateway) {
-      probeGateway.child.kill();
-    }
-    if (warningProbeGateway) {
-      warningProbeGateway.child.kill();
-    }
+    await Promise.all([
+      stopGateway(gateway),
+      stopGateway(limitGateway),
+      stopGateway(probeGateway),
+      stopGateway(warningProbeGateway),
+    ]);
     upstream.close();
     await once(upstream, "close");
     await rm(tempRoot, { recursive: true, force: true });

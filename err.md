@@ -1,41 +1,91 @@
 # err.md
 
-## 2026-07-06 Responses 流式续写恢复不能只返回最后一轮
+## 当前默认值说明
+
+- 早期排错记录里出现的 `guard_retry_attempts=3` 是历史默认；当前项目默认以 `gateway.mjs`、`config.example.json`、`README.md` 和 `build.md` 为准，默认值已经调整为 `5`。
+- `stream_action=continuation_recovery` 只让 `reasoning_tokens` 主规则命中的 Responses 流式请求进入安全续写；`final_answer_only_high_xhigh` 实验规则即使选择该动作，也只共用 `guard_retry_attempts` 做普通内部重试/最终拦截。
+
+## 2026-07-06 Responses 流式安全续写不能透出截断轮输出
 
 ### 现象
 
-- `stream_action=continuation_recovery` 命中 516 / 1034 / 518*n-2 后，真实用户反馈续写结果会出现输出不完整。
-- 本机 analytics 元数据显示，大量 `continuation_recovery` 样本在命中轮已经观察到 `has_output_text=true` / `has_final_answer=true`，但旧实现最终只把最后一个成功轮返回给客户端。
-- 多轮续写场景下，前面命中轮已经产生的非终止 SSE 片段会被丢掉，客户端只能看到最后一轮，容易表现为前后文断裂或后半段缺失。
+- `stream_action=continuation_recovery` 命中 516 / 1034 / 518*n-2 后，真实用户反馈续写结果会出现输出不完整或语义断裂。
+- 本机 analytics 元数据显示，大量 `continuation_recovery` 样本在命中轮已经观察到 `has_output_text=true` / `has_final_answer=true`，说明命中轮可能已经吐出 tentative final / message / tool / reasoning 片段。
+- 经过后续安全复盘，命中轮的 visible output、tool call、message、reasoning item 和 `encrypted_content` 都不能当成确定输出；不能为了“补全前半段”把命中轮片段拼接给客户端。
 
 ### 根因
 
-- 旧实现把每一轮上游 SSE 缓存在 `bufferedChunks`。
-- 命中续写时直接返回 `{ continuationRecovery: true }` 并进入下一轮请求，没有把当前轮可保留的非终止 SSE 片段带到最终响应。
-- 最后一轮干净结束时只 `res.end(Buffer.concat(bufferedChunks))`，因此天然只能返回最后一轮。
+- 续写恢复的目标不是保留命中轮片段，而是在命中当前规则后丢弃不可信轮，基于原始 input 发起安全续写。
+- 旧讨论中“把前面非终止 SSE 片段带到最终响应”的思路会把降智/截断轮内容混入最终 envelope，导致同一个下游 SSE 混用不同 `response.id` / `model`，且可能透出 tentative tool / final / reasoning。
+- 因此正确修复是：命中轮只作为触发信号；中间轮只计入观测和拦截统计，不进入客户端输出，也不进入下一轮续写上下文。
 - 如果简单回退 `internal_retry`，会把“续写恢复”偷换成“重新生成”，不符合 `continuation_recovery` 的产品语义。
 
 ### 处理
 
-- 为 Responses 流式续写增加 fold buffer：
-  - 命中续写前，保留当前轮非终止 SSE block。
-  - 丢弃中间轮 `response.completed` / `response.failed` / `response.incomplete` / `[DONE]`。
-  - 最终干净轮返回时，拼接 fold buffer 与最终轮 SSE。
-  - 若最终轮也带 `response.created` / `response.in_progress`，折叠时去掉最终轮重复 lifecycle，避免一个下游 SSE 出现多个 `response.created`。
-- 继续复用既有 `stripEncryptedContentFromSseBody()`，不向客户端暴露 `encrypted_content`。
+- 为 Responses 流式续写增加安全语义折叠策略：
+  - 命中续写前，不保留命中轮 lifecycle；reasoning item / message / final answer / function call / tool call 都视为 tentative output。
+  - 截断轮所有可见/可执行输出命中后丢弃，不透给客户端，也不进入下一轮续写上下文。
+  - 丢弃中间轮 `response.created` / `response.in_progress` / `response.completed` / `response.failed` / `response.incomplete` / `[DONE]`。
+  - 最终干净轮返回时，保留最终轮自带 lifecycle、输出、`response.completed` 与 `[DONE]`。
+  - 不混用命中轮与最终轮的 `response.id` / `model`，避免一个下游 SSE envelope 身份不一致。
+- 续写请求删除 `previous_response_id`，只显式 replay 原始 input 并追加 `phase=commentary` 标记；默认不自动请求 `reasoning.encrypted_content`；原始 input 中的 reasoning item / `encrypted_content` 会在续写 replay 前过滤；请求摘要对畸形 JSON 也按敏感文本 fail-closed 脱敏；命中轮 encrypted reasoning item 不 replay 到下一轮，也不再作为继续安全续写的必要门槛。
+- Responses 流式续写安全模式继续复用 `stripEncryptedContentFromSseBody()`，即使原请求显式 include `reasoning.encrypted_content` 且本轮未命中，最终透传响应也不向客户端暴露 `encrypted_content`；畸形 SSE / JSON fallback 中疑似敏感片段会被 redacted。
 - 不改变拦截规则、不改变 `guard_retry_attempts` 语义、不把续写恢复降级成普通内部重试。
 
 ### 验证
 
 - 红测：
   - `node .\scripts\test-gateway-e2e.mjs`
-  - 先失败在 `续写折叠不能只返回最后一轮，应保留同一个下游 SSE 的前后续写段`
-  - 后续补充失败在 `续写折叠后同一个下游 SSE 不应出现多个 response.created`
+  - 先失败在 `续写恢复第二轮请求应删除 previous_response_id，续写状态由显式 input replay 承载`
+  - 语义 fold 断言覆盖：截断轮 `fold-part-a` 不应透出，截断轮 `function_call` / `call_test_1` / tool arguments 不应透出，最终干净轮 `fold-part-b` 与 `[DONE]` 必须保留。
+  - 多 agent 审查补充红测：`516 -> 1034 -> 128` 中，516 / 1034 连续命中都继续安全续写；第 2 / 3 次续写请求都只能基于原始 input 追加 1 个 commentary marker；最终 SSE 的 `response.created` / `response.in_progress` / `response.completed` 必须全部来自最终干净轮；也不应透出 mixed `response.output_snapshot` 夹带的 `snapshot-tentative-final`。另补 `516 -> 1034 -> 18` 耗尽用例，确认次数耗尽后仍命中返回 `502` 且不透出中间轮 SSE。
 - 修复后：
   - `node --check .\gateway.mjs`
   - `node --check .\scripts\test-gateway-e2e.mjs`
   - `node .\scripts\test-gateway-e2e.mjs`
 
+## 2026-07-06 Responses 流式安全续写的 encrypted_content 脱敏边界
+
+### 现象
+
+- 多 agent 复审发现多个隐私边界：
+  - `stream:true` 请求如果上游返回 `text/plain` / 非 JSON / 非 SSE，响应体没有 `data:` 行时会绕过 SSE JSON 脱敏，可能把 `encrypted_content` 原样透给客户端。
+  - 畸形 JSON 请求体如果 `encrypted_content` 的值是对象、数组或未加引号值，原文本脱敏只替换字段名，可能把敏感值落入 `request_payload_excerpt`，并随 JSON / CSV 导出。
+  - 畸形 JSON 请求体如果把 key 写成 `\u0065ncrypted_content` 这类 escaped-letter 形式，旧归一化只能识别 `\u005f`，会把 key 和敏感值一起落盘。
+  - SSE block 有合法 `data:` 行时，旧逻辑只清理 data payload，`event:` / `id:` / comment 这类 non-data 行如果带 `encrypted_content=...` 会原样透传。
+  - 历史 day file、同步导出、后台导出下载都应在出口再做一次脱敏，不能假设早期样本一定已经干净。
+
+### 根因
+
+- `stripEncryptedContentFromSseBody()` 对无 `data:` 的普通文本块直接返回原文；有 `data:` 行时也只清理 data payload，没有处理 non-data metadata 行。
+- `redactEncryptedContentText()` 之前主要覆盖 `encrypted_content: "字符串"`，对畸形对象 / 数组值无法确定边界，也没有处理 `encrypted_content=...` 这类 KV 形式。
+- `normalizeEscapedEncryptedContentKey()` 只把 `\u005f` 归一化为 `_`，不能识别 `\u0065ncrypted_content` 这类 escaped-letter key。
+- `clonePlainSample()` 没有对 `request_payload_excerpt` 做出口二次脱敏，历史脏样本可能继续进入 JSON / CSV / 后台导出 / 日文件。
+
+### 处理
+
+- 文本脱敏改为扫描 `encrypted_content:` 后的值边界：字符串、对象、数组、未加引号值都会整体替换为 `"redacted_sensitive_content":true`。
+- escaped ASCII unicode 归一化从只处理 `\u005f` 扩展为处理 `\u00xx` 级别的 ASCII key 片段；无敏感命中时保留原文，避免无关请求摘要被改写。
+- `encrypted_content=...` 这类 KV 形式会把 key 和 value 一起替换为 `redacted_sensitive_content=true`。
+- `stripEncryptedContentFromSseBody()` 遇到无 `data:` 但疑似包含 `encrypted_content` 的文本块时，也走同一文本脱敏路径；有 `data:` 行时，non-data 行也逐行脱敏。
+- `clonePlainSample()` 对 `request_payload_excerpt` 做出口二次脱敏，覆盖内存样本、日文件 flush、同步 JSON / CSV 导出和后台导出下载。
+- E2E 补充：
+  - 畸形请求体中对象 / 数组 / 未加引号值 / escaped-letter key 不落 `request_payload_excerpt`，也不进入 JSON / CSV / 后台导出 / 日文件。
+  - 同步 JSON / CSV、后台导出下载和日文件都同时断言“样本定位 key 仍存在”与“`encrypted_content` 字段名、escaped key、敏感值均不存在”，避免用空导出或过滤样本伪通过。
+  - 后台导出测试使用覆盖当前日期的动态大范围日期段，仍触发后台任务，但不再固定在历史月份导致空测。
+  - `stream:true` + `text/plain` fallback 不向客户端暴露 `encrypted_content` 或敏感值。
+  - SSE metadata non-data 行不向客户端暴露 `encrypted_content` 或敏感值。
+
+### 验证
+
+- 红测先失败在：`对象/数组值畸形 JSON 请求摘要不应落盘 encrypted_content 字段或值`。
+- 多 agent 复审补充红测后，先失败在：`escaped-letter key 畸形 JSON 请求摘要不应落盘 encrypted_content 字段或值`。
+- 修复 escaped-letter 后继续失败在：`stream:true SSE metadata 行不应向客户端暴露 encrypted_content`，证明 KV value 仍会泄漏。
+- reviewer 复审后又发现后台导出下载原测试固定 `2026-01-01..2026-03-15`，当前日期样本不会进入该范围，属于空测；已改成覆盖当前日期的动态 40 天范围，并断言导出样本数组包含畸形样本 key。
+- 修复后通过：
+  - `node --check .\gateway.mjs`
+  - `node --check .\scripts\test-gateway-e2e.mjs`
+  - `node .\scripts\test-gateway-e2e.mjs`
 ## 2026-07-02 reasoning 分桶表不应把 count=1 的 token 显示成“高频 token”
 
 ### 现象

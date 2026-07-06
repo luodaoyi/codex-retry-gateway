@@ -207,8 +207,9 @@ function printHelp() {
       "",
       "说明:",
       "  独立 Codex 本地重试网关。",
-      "  非流式命中 reasoning_tokens 命中默认集合 516/1034/1552 时返回 502。",
-      "  流式命中时默认缓存并返回 502，避免半截流返回。",
+      "  默认拦截规则为 reasoning_tokens + 518*n - 2 公式（516/1034/1552/2070...）。",
+      "  命中后默认最多内部尝试 guard_retry_attempts=5 次，耗尽后返回 502。",
+      "  Responses 流式在 reasoning_tokens 主规则命中时优先安全续写；final-only 实验规则只走普通内部重试/最终拦截。",
       "",
     ].join("\n"),
   );
@@ -1316,7 +1317,12 @@ function buildRequestSummary(bodyBuffer, headers) {
 }
 
 function buildRequestPayloadExcerpt(bodyBuffer) {
-  return truncateText(bodyBuffer.toString("utf8"), 500);
+  const parsed = parseJsonSafely(bodyBuffer);
+  if (parsed) {
+    return truncateText(JSON.stringify(stripEncryptedContent(parsed)), 500);
+  }
+  const text = bodyBuffer.toString("utf8");
+  return truncateText(redactEncryptedContentText(text), 500);
 }
 
 function buildFailureSummary(error, responsePayload = null) {
@@ -1662,6 +1668,10 @@ function clonePlainSample(sample) {
           },
         }
       : null,
+    request_payload_excerpt:
+      sample.request_payload_excerpt === null || sample.request_payload_excerpt === undefined
+        ? sample.request_payload_excerpt
+        : redactEncryptedContentText(sample.request_payload_excerpt),
     failure_summary: sample.failure_summary ? { ...sample.failure_summary } : null,
     event_type_counts: { ...(sample.event_type_counts || {}) },
     response_item_type_counts: { ...(sample.response_item_type_counts || {}) },
@@ -9695,38 +9705,6 @@ function cloneJsonValue(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function cloneContinuationReasoningItem(item) {
-  if (
-    item &&
-    item.type === "reasoning" &&
-    typeof item.encrypted_content === "string" &&
-    item.encrypted_content.trim()
-  ) {
-    return cloneJsonValue(item);
-  }
-  return null;
-}
-
-function collectContinuationReasoningItem(payload) {
-  const directItem = cloneContinuationReasoningItem(payload?.item);
-  if (directItem) {
-    return directItem;
-  }
-  const outputCollections = [payload?.output, payload?.response?.output];
-  for (const outputItems of outputCollections) {
-    if (!Array.isArray(outputItems)) {
-      continue;
-    }
-    for (const item of outputItems) {
-      const reasoningItem = cloneContinuationReasoningItem(item);
-      if (reasoningItem) {
-        return reasoningItem;
-      }
-    }
-  }
-  return null;
-}
-
 function normalizeResponsesInputItemForContinuation(item) {
   if (typeof item === "string") {
     return {
@@ -9738,31 +9716,32 @@ function normalizeResponsesInputItemForContinuation(item) {
   return cloneJsonValue(item);
 }
 
+function sanitizeResponsesInputItemForContinuationReplay(item) {
+  const normalized = normalizeResponsesInputItemForContinuation(item);
+  if (!normalized || normalized?.type === "reasoning") {
+    return null;
+  }
+  return stripEncryptedContent(normalized);
+}
+
 function normalizeResponsesInputForContinuation(input) {
-  if (Array.isArray(input)) {
-    return input.map(normalizeResponsesInputItemForContinuation);
-  }
-  if (input === undefined || input === null) {
-    return [];
-  }
-  return [normalizeResponsesInputItemForContinuation(input)];
+  const items = Array.isArray(input)
+    ? input
+    : input === undefined || input === null
+      ? []
+      : [input];
+  return items
+    .map(sanitizeResponsesInputItemForContinuationReplay)
+    .filter((item) => item !== null && item !== undefined);
 }
 
-function mergeContinuationInclude(include) {
-  const items = Array.isArray(include) ? include.map((item) => `${item}`) : [];
-  if (!items.includes(CONTINUATION_ENCRYPTED_INCLUDE)) {
-    items.push(CONTINUATION_ENCRYPTED_INCLUDE);
+function removeContinuationEncryptedInclude(include) {
+  if (!Array.isArray(include)) {
+    return include;
   }
-  return items;
+  const items = include.map((item) => `${item}`).filter((item) => item !== CONTINUATION_ENCRYPTED_INCLUDE);
+  return items.length > 0 ? items : undefined;
 }
-
-function requestIncludesEncryptedReasoning(requestJson) {
-  return (
-    Array.isArray(requestJson?.include) &&
-    requestJson.include.some((item) => `${item}` === CONTINUATION_ENCRYPTED_INCLUDE)
-  );
-}
-
 function stripEncryptedContent(value) {
   if (Array.isArray(value)) {
     return value.map(stripEncryptedContent);
@@ -9780,11 +9759,141 @@ function stripEncryptedContent(value) {
   return stripped;
 }
 
+function normalizeEscapedEncryptedContentKey(value) {
+  const raw = `${value || ""}`;
+  return raw.replace(/\\+u([0-9a-f]{4})/gi, (match, hex) => {
+    const codePoint = Number.parseInt(hex, 16);
+    if (Number.isInteger(codePoint) && codePoint >= 0x20 && codePoint <= 0x7e) {
+      return String.fromCharCode(codePoint);
+    }
+    return match;
+  });
+}
+
+function textMayContainEncryptedContent(value) {
+  return normalizeEscapedEncryptedContentKey(value).includes("encrypted_content");
+}
+
+function findRedactableTextValueEnd(text, startIndex) {
+  let index = startIndex;
+  while (index < text.length && /\s/.test(text[index])) {
+    index += 1;
+  }
+  if (index >= text.length) {
+    return index;
+  }
+  const first = text[index];
+  if (first === '"' || first === "'") {
+    const quote = first;
+    index += 1;
+    let escaped = false;
+    while (index < text.length) {
+      const char = text[index];
+      if (escaped) {
+        escaped = false;
+        index += 1;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        index += 1;
+        continue;
+      }
+      if (char === quote) {
+        return index + 1;
+      }
+      index += 1;
+    }
+    return text.length;
+  }
+  if (first === "{" || first === "[") {
+    const stack = [first];
+    index += 1;
+    let inString = false;
+    let quote = "";
+    let escaped = false;
+    while (index < text.length) {
+      const char = text[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === quote) {
+          inString = false;
+        }
+        index += 1;
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        inString = true;
+        quote = char;
+        index += 1;
+        continue;
+      }
+      if (char === "{" || char === "[") {
+        stack.push(char);
+      } else if (char === "}" || char === "]") {
+        const expected = char === "}" ? "{" : "[";
+        if (stack[stack.length - 1] === expected) {
+          stack.pop();
+        }
+        if (stack.length === 0) {
+          return index + 1;
+        }
+      }
+      index += 1;
+    }
+    return text.length;
+  }
+  while (index < text.length && !/[\r\n,}\]]/.test(text[index])) {
+    index += 1;
+  }
+  return index;
+}
+
+function redactEncryptedContentText(value) {
+  const raw = `${value || ""}`;
+  const text = normalizeEscapedEncryptedContentKey(raw);
+  if (!text.includes("encrypted_content")) {
+    return raw;
+  }
+  const keyPattern = /(["']?)encrypted_content\1\s*:/gi;
+  let result = "";
+  let lastIndex = 0;
+  let matched = false;
+  for (const match of text.matchAll(keyPattern)) {
+    matched = true;
+    result += text.slice(lastIndex, match.index);
+    result += '"redacted_sensitive_content":true';
+    lastIndex = findRedactableTextValueEnd(text, match.index + match[0].length);
+  }
+  if (!matched) {
+    const assignmentPattern = /encrypted_content\s*=\s*[^\r\n,;&]+/gi;
+    if (assignmentPattern.test(text)) {
+      return text
+        .replace(assignmentPattern, "redacted_sensitive_content=true")
+        .replace(/encrypted_content/gi, "redacted_sensitive_content");
+    }
+    return text.replace(/encrypted_content/gi, "redacted_sensitive_content");
+  }
+  result += text.slice(lastIndex);
+  return result.replace(/encrypted_content/gi, "redacted_sensitive_content");
+}
+
+function stripEncryptedContentFromBodyBuffer(buffer) {
+  const parsed = parseJsonSafely(buffer);
+  if (parsed) {
+    return Buffer.from(JSON.stringify(stripEncryptedContent(parsed)), "utf8");
+  }
+  if (textMayContainEncryptedContent(Buffer.isBuffer(buffer) ? buffer.toString("utf8") : `${buffer || ""}`)) {
+    return Buffer.from(JSON.stringify({ type: "gateway.redacted", redacted: true }), "utf8");
+  }
+  return Buffer.isBuffer(buffer) ? buffer : Buffer.from(`${buffer || ""}`, "utf8");
+}
+
 function stripEncryptedContentFromSseBody(buffer) {
   const text = Buffer.isBuffer(buffer) ? buffer.toString("utf8") : `${buffer || ""}`;
-  if (!text.includes("encrypted_content")) {
-    return Buffer.isBuffer(buffer) ? buffer : Buffer.from(text, "utf8");
-  }
   const blocks = text.split(/\r?\n\r?\n/);
   const transformed = blocks
     .map((block) => {
@@ -9792,126 +9901,51 @@ function stripEncryptedContentFromSseBody(buffer) {
         return block;
       }
       const lines = block.split(/\r?\n/);
-      const dataLines = lines
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.replace(/^data:\s?/, ""));
+      const nonDataLines = lines.filter((line) => !line.startsWith("data:"));
+      const sanitizedNonDataLines = nonDataLines.map((line) =>
+        textMayContainEncryptedContent(line) ? redactEncryptedContentText(line) : line,
+      );
+      const nonDataWasRedacted = sanitizedNonDataLines.some((line, index) => line !== nonDataLines[index]);
+      const originalDataLines = lines.filter((line) => line.startsWith("data:"));
+      const dataLines = originalDataLines.map((line) => line.replace(/^data:\s?/, ""));
+      const rebuildWithOriginalData = () => [
+        ...sanitizedNonDataLines,
+        ...originalDataLines,
+      ].join("\n");
       if (dataLines.length === 0) {
-        return block;
+        return textMayContainEncryptedContent(block) ? redactEncryptedContentText(block) : block;
       }
       const payloadText = dataLines.join("\n");
       if (payloadText === "[DONE]") {
-        return block;
+        return nonDataWasRedacted ? rebuildWithOriginalData() : block;
       }
       try {
         const strippedPayload = stripEncryptedContent(JSON.parse(payloadText));
         return [
-          ...lines.filter((line) => !line.startsWith("data:")),
+          ...sanitizedNonDataLines,
           `data: ${JSON.stringify(strippedPayload)}`,
         ].join("\n");
       } catch {
-        return block;
+        if (textMayContainEncryptedContent(payloadText)) {
+          return [
+            ...sanitizedNonDataLines,
+            `data: ${JSON.stringify({ type: "gateway.redacted", redacted: true })}`,
+          ].join("\n");
+        }
+        return nonDataWasRedacted ? rebuildWithOriginalData() : block;
       }
     })
     .join("\n\n");
   return Buffer.from(transformed, "utf8");
 }
-
-function isContinuationFoldTerminalPayload(payload) {
-  const type = typeof payload?.type === "string" ? payload.type : "";
-  return type === "response.completed" || type === "response.failed" || type === "response.incomplete";
-}
-
-function isContinuationFoldLifecyclePayload(payload) {
-  const type = typeof payload?.type === "string" ? payload.type : "";
-  return type === "response.created" || type === "response.in_progress";
-}
-
-function collectContinuationFoldChunks(buffer) {
-  const text = Buffer.isBuffer(buffer) ? buffer.toString("utf8") : `${buffer || ""}`;
-  if (!text.trim()) {
-    return null;
-  }
-  const foldedBlocks = [];
-  for (const block of text.split(/\r?\n\r?\n/)) {
-    if (!block.trim()) {
-      continue;
-    }
-    const lines = block.split(/\r?\n/);
-    const dataLines = lines
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.replace(/^data:\s?/, ""));
-    if (dataLines.length === 0) {
-      foldedBlocks.push(block);
-      continue;
-    }
-    const payloadText = dataLines.join("\n");
-    if (payloadText === "[DONE]") {
-      continue;
-    }
-    try {
-      const payload = JSON.parse(payloadText);
-      if (isContinuationFoldTerminalPayload(payload)) {
-        continue;
-      }
-    } catch {
-      // Keep malformed non-DONE SSE data exactly as received.
-    }
-    foldedBlocks.push(block);
-  }
-  if (foldedBlocks.length === 0) {
-    return null;
-  }
-  return Buffer.from(`${foldedBlocks.join("\n\n")}\n\n`, "utf8");
-}
-
-function dropContinuationFoldLifecycleChunks(buffer) {
-  const text = Buffer.isBuffer(buffer) ? buffer.toString("utf8") : `${buffer || ""}`;
-  if (!text.trim()) {
-    return Buffer.isBuffer(buffer) ? buffer : Buffer.from(text, "utf8");
-  }
-  const keptBlocks = [];
-  for (const block of text.split(/\r?\n\r?\n/)) {
-    if (!block.trim()) {
-      continue;
-    }
-    const dataLines = block
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.replace(/^data:\s?/, ""));
-    if (dataLines.length > 0) {
-      const payloadText = dataLines.join("\n");
-      try {
-        if (isContinuationFoldLifecyclePayload(JSON.parse(payloadText))) {
-          continue;
-        }
-      } catch {
-        // Keep malformed SSE data exactly as received.
-      }
-    }
-    keptBlocks.push(block);
-  }
-  return Buffer.from(keptBlocks.length === 0 ? "" : `${keptBlocks.join("\n\n")}\n\n`, "utf8");
-}
-
-function appendContinuationRecoveryFoldRound(requestTracking, buffer) {
-  const foldedBuffer = collectContinuationFoldChunks(buffer);
-  if (!foldedBuffer || foldedBuffer.length === 0) {
-    return;
-  }
-  if (!Array.isArray(requestTracking.continuation_recovery_fold_chunks)) {
+function appendContinuationRecoveryFoldRound(requestTracking) {
+  if (requestTracking) {
     requestTracking.continuation_recovery_fold_chunks = [];
   }
-  requestTracking.continuation_recovery_fold_chunks.push(foldedBuffer);
 }
 
-function buildContinuationRecoveryFoldedBody(requestTracking, finalBuffer) {
-  const foldedChunks = Array.isArray(requestTracking?.continuation_recovery_fold_chunks)
-    ? requestTracking.continuation_recovery_fold_chunks.filter((chunk) => chunk?.length > 0)
-    : [];
-  if (foldedChunks.length === 0) {
-    return finalBuffer;
-  }
-  return Buffer.concat([...foldedChunks, dropContinuationFoldLifecycleChunks(finalBuffer)]);
+function buildContinuationRecoveryFoldedBody(_requestTracking, finalBuffer) {
+  return finalBuffer;
 }
 function buildContinuationMarkerItem(config) {
   return {
@@ -9927,13 +9961,18 @@ function buildContinuationMarkerItem(config) {
   };
 }
 
-function buildContinuationRecoveryRequestBody(config, baseRequestJson, continuationReasoningItems) {
+function buildContinuationRecoveryRequestBody(config, baseRequestJson) {
   const nextBody = cloneJsonValue(baseRequestJson || {}) || {};
+  delete nextBody.previous_response_id;
+  const nextInclude = removeContinuationEncryptedInclude(nextBody.include);
+  if (nextInclude === undefined) {
+    delete nextBody.include;
+  } else {
+    nextBody.include = nextInclude;
+  }
   nextBody.stream = true;
-  nextBody.include = mergeContinuationInclude(nextBody.include);
   nextBody.input = [
     ...normalizeResponsesInputForContinuation(baseRequestJson?.input),
-    ...continuationReasoningItems.map(cloneJsonValue),
     buildContinuationMarkerItem(config),
   ];
   return {
@@ -9943,37 +9982,23 @@ function buildContinuationRecoveryRequestBody(config, baseRequestJson, continuat
 }
 
 function maybePrepareContinuationRecoveryRequestBody(
-  config,
-  pathname,
+  _config,
+  _pathname,
   requestJson,
   requestBody,
-  { shouldInspect = false, requestKind = REQUEST_KIND_NORMAL } = {},
+  _options = {},
 ) {
-  const shouldAutoInclude =
-    normalizeStreamAction(config?.stream_action) === STREAM_ACTION_CONTINUATION_RECOVERY &&
-    normalizeInterceptRuleMode(config?.intercept_rule_mode) === INTERCEPT_RULE_MODE_REASONING_TOKENS &&
-    shouldInspect &&
-    requestKind !== REQUEST_KIND_CONTEXT_COMPACTION &&
-    config?.intercept_streaming !== false &&
-    !requestIncludesEncryptedReasoning(requestJson);
-  if (
-    !isResponsesPath(pathname) ||
-    !requestJson ||
-    typeof requestJson !== "object" ||
-    !requestJson.stream ||
-    !shouldAutoInclude
-  ) {
-    return { requestJson, requestBody, autoAddedEncryptedReasoning: false };
-  }
-  const nextBody = cloneJsonValue(requestJson) || {};
-  nextBody.include = mergeContinuationInclude(nextBody.include);
-  return {
-    requestJson: nextBody,
-    requestBody: Buffer.from(JSON.stringify(nextBody), "utf8"),
-    autoAddedEncryptedReasoning: true,
-  };
+  return { requestJson, requestBody, autoAddedEncryptedReasoning: false };
 }
 
+function shouldStripEncryptedContentFromContinuationResponse(config, pathname, shouldInspect, requestJson) {
+  return Boolean(
+    shouldInspect &&
+      isResponsesPath(pathname) &&
+      requestJson?.stream &&
+      normalizeStreamAction(config.stream_action) === STREAM_ACTION_CONTINUATION_RECOVERY,
+  );
+}
 function getRequestPathname(req) {
   try {
     return normalizePath(new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`).pathname);
@@ -10150,10 +10175,9 @@ async function handleNonStreaming({
   );
   copyHeadersToClient(upstreamResponse.headers, res);
   res.writeHead(upstreamResponse.status);
-  const finalBody =
-    requestTracking?.strip_auto_encrypted_reasoning && parsed
-      ? Buffer.from(JSON.stringify(stripEncryptedContent(parsed)), "utf8")
-      : bodyBuffer;
+  const finalBody = requestTracking?.strip_encrypted_reasoning_response
+    ? stripEncryptedContentFromBodyBuffer(bodyBuffer)
+    : bodyBuffer;
   res.end(finalBody);
   if (!matched) {
     if (upstreamResponse.status < 400) {
@@ -10201,7 +10225,6 @@ async function handleStreaming({
   let sampleRecorded = false;
   let observedMatchedRule = false;
   let observedOnlyMatchedRule = false;
-  const continuationReasoningItems = [];
   const bufferedChunks = [];
 
   const finishReasoningSample = (options = {}) => {
@@ -10280,11 +10303,11 @@ async function handleStreaming({
         const canReturnBlockedStatus = strict502Mode;
         const canContinuationRecover =
           streamAction === STREAM_ACTION_CONTINUATION_RECOVERY &&
+          finalRuleMatch.mode === INTERCEPT_RULE_MODE_REASONING_TOKENS &&
           shouldIntercept &&
           canReturnBlockedStatus &&
           requestTracking?.request_kind !== REQUEST_KIND_CONTEXT_COMPACTION &&
           isResponsesPath(pathname) &&
-          continuationReasoningItems.length > 0 &&
           requestTracking?.guardRetryRemaining > 0;
         const canGuardRetry =
           shouldIntercept &&
@@ -10312,8 +10335,7 @@ async function handleStreaming({
             recordContinuationRecoveryAttempt(monitor, requestTracking);
             const continuationRequest = buildContinuationRecoveryRequestBody(
               config,
-              requestTracking?.requestJson,
-              continuationReasoningItems,
+              requestTracking?.continuation_recovery_base_request_json ?? requestTracking?.requestJson,
             );
             finishReasoningSample({
               finalAction: "continuation_recovery",
@@ -10369,7 +10391,7 @@ async function handleStreaming({
           requestTracking,
           Buffer.concat(bufferedChunks),
         );
-        const finalBody = requestTracking?.strip_auto_encrypted_reasoning
+        const finalBody = requestTracking?.strip_encrypted_reasoning_response
           ? stripEncryptedContentFromSseBody(rawFinalBody)
           : rawFinalBody;
         res.end(finalBody);
@@ -10400,10 +10422,6 @@ async function handleStreaming({
       });
       applyParsedUsageToReasoningSample(reasoningSample, payload);
       applyStructureSignalsFromPayload(payload, structureAccumulator, { fromStream: true });
-      const continuationReasoningItem = collectContinuationReasoningItem(payload);
-      if (continuationReasoningItem) {
-        continuationReasoningItems.push(continuationReasoningItem);
-      }
       if (payloadHasVisibleContent(payload)) {
         markReasoningSampleFirstContent(reasoningSample, nowMs);
       }
@@ -10430,7 +10448,6 @@ async function handleStreaming({
         canReturnBlockedStatus &&
         requestTracking?.request_kind !== REQUEST_KIND_CONTEXT_COMPACTION &&
         isResponsesPath(pathname) &&
-        continuationReasoningItems.length > 0 &&
         requestTracking?.guardRetryRemaining > 0;
       const canGuardRetry =
         shouldIntercept &&
@@ -10472,8 +10489,7 @@ async function handleStreaming({
           recordContinuationRecoveryAttempt(monitor, requestTracking);
           const continuationRequest = buildContinuationRecoveryRequestBody(
             config,
-            requestTracking?.requestJson,
-            continuationReasoningItems,
+            requestTracking?.continuation_recovery_base_request_json ?? requestTracking?.requestJson,
           );
           finishReasoningSample({
             finalAction: "continuation_recovery",
@@ -10542,6 +10558,7 @@ async function proxyRequest(runtime, req, res) {
     req,
     continuation_recovery_attempted: false,
     continuation_recovery_success_recorded: false,
+    continuation_recovery_base_request_json: null,
   };
 
   if (pathname === config.health_path) {
@@ -10616,8 +10633,13 @@ async function proxyRequest(runtime, req, res) {
   requestJson = preparedContinuationRequest.requestJson;
   requestBody = preparedContinuationRequest.requestBody;
   requestTracking.requestJson = requestJson;
-  requestTracking.strip_auto_encrypted_reasoning =
-    preparedContinuationRequest.autoAddedEncryptedReasoning === true;
+  requestTracking.continuation_recovery_base_request_json =
+    isResponsesPath(pathname) && requestJson && typeof requestJson === "object" && requestJson.stream
+      ? cloneJsonValue(requestJson)
+      : null;
+  requestTracking.strip_encrypted_reasoning_response =
+    preparedContinuationRequest.autoAddedEncryptedReasoning === true ||
+    shouldStripEncryptedContentFromContinuationResponse(config, pathname, shouldInspect, requestJson);
   let guardRetryAttemptsUsed = 0;
 
   while (true) {
@@ -10735,7 +10757,7 @@ async function proxyRequest(runtime, req, res) {
         requestBody = handlerResult.requestBody;
         requestJson = handlerResult.requestJson;
         requestTracking.requestJson = requestJson;
-        requestTracking.strip_auto_encrypted_reasoning = true;
+        requestTracking.strip_encrypted_reasoning_response = true;
         continue;
       }
 

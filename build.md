@@ -99,9 +99,9 @@ http://127.0.0.1:4610/__codex_retry_gateway/ui
 - `reasoning_match_mode=manual` 会切回手动 `reasoning_equals` 列表；公式模式下 `reasoning_equals` 只保留为回退/参考列表。
 - `final_answer_only_high_xhigh` 是实验收窄规则，仅在 `reasoning.effort=high/xhigh` 下拦截 `final answer only + commentary not observed + no tool call + no reasoning item`，且 `reasoning_tokens=null/缺失` 或非 0 的响应结构；普通 `reasoning_tokens=0` 只观察落盘，不触发该实验规则。它可能漏掉仍影响正确性的 516 样本，不建议替代默认 516/1034/1552 主拦截。
 - 两个规则模式二选一；`intercept_streaming` / `intercept_non_streaming` 只控制命中当前规则后是否真正拦截。
-- `stream_action=continuation_recovery` 是流式命中动作，不是拦截规则；命中当前规则后，仅对 `/responses` 与 `/v1/responses` 的流式响应尝试内部续写，第二轮请求会携带上一轮 encrypted reasoning item 和 `phase=commentary` 标记，不限定特定 token 公式。
+- `stream_action=continuation_recovery` 是流式命中动作，不是拦截规则；仅在 `reasoning_tokens` 主规则命中时，对 `/responses` 与 `/v1/responses` 的流式响应尝试内部续写。`final_answer_only_high_xhigh` 实验规则不触发安全续写，只共用 `guard_retry_attempts` 做普通内部重试/最终拦截。续写请求会删除 `previous_response_id`，只显式 replay 原始 input 并追加 `phase=commentary` 标记，默认不自动请求 `reasoning.encrypted_content`，续写 replay 会过滤原始 input 中的 reasoning item / `encrypted_content`，安全模式下即使原请求显式 include 且本轮未命中，也会在下游响应和本地请求摘要中剥离 `encrypted_content`，也不 replay 命中轮 encrypted reasoning item，不限定特定 token 公式。
 - `guard_retry_attempts` 默认 `5`，是命中后最大内部尝试次数；普通内部重试、`stream_action=continuation_recovery` 的 Responses 流式续写恢复、以及开启 capacity 选项后的上游 capacity 错误内重试都共用这里。
-- `stream_action=continuation_recovery` 复用 `guard_retry_attempts` 控制最大续写轮数；无法构造续写请求时回到既有内部重试 / 拦截逻辑。
+- `stream_action=continuation_recovery` 复用 `guard_retry_attempts` 控制最大安全续写次数；安全续写后的后续轮如果再次命中，会继续安全续写，耗尽后仍命中才返回拦截状态；各命中轮 lifecycle / reasoning item / tentative final answer / message / tool call / convenience `output_text` 不透给客户端，最终下游 SSE 以干净完成轮的 lifecycle 为准。
 - `remote_compaction_v2` 只是 beta feature 标记，不单独识别为压缩请求；只有显式 `context_compaction` 且 `reasoning_tokens=0` 的响应会豁免，`516/1034/1552` 等命中值仍按当前规则处理并受 `guard_retry_attempts` 控制。
 - `retry_upstream_capacity_errors` 默认开启，只匹配上游 `Selected model is at capacity. Please try a different model.`；命中后按 `guard_retry_attempts` 在网关内部重试，普通 `429` / `502` 仍原样透传。
 
@@ -170,6 +170,8 @@ node ./scripts/test-launch-ui-unix.mjs
 ```
 
 ## 本机真实验证命令
+
+以下命令会访问当前 `127.0.0.1:4610` 上实际运行的 gateway，只作为可选实机验证；需要维护窗口，不属于 PR 合并前必跑项，也不要在承载重要 Codex 会话时贸然执行重启/切换类操作。
 
 ```powershell
 Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:4610/__codex_retry_gateway/health'
