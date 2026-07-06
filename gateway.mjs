@@ -9816,6 +9816,103 @@ function stripEncryptedContentFromSseBody(buffer) {
   return Buffer.from(transformed, "utf8");
 }
 
+function isContinuationFoldTerminalPayload(payload) {
+  const type = typeof payload?.type === "string" ? payload.type : "";
+  return type === "response.completed" || type === "response.failed" || type === "response.incomplete";
+}
+
+function isContinuationFoldLifecyclePayload(payload) {
+  const type = typeof payload?.type === "string" ? payload.type : "";
+  return type === "response.created" || type === "response.in_progress";
+}
+
+function collectContinuationFoldChunks(buffer) {
+  const text = Buffer.isBuffer(buffer) ? buffer.toString("utf8") : `${buffer || ""}`;
+  if (!text.trim()) {
+    return null;
+  }
+  const foldedBlocks = [];
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    if (!block.trim()) {
+      continue;
+    }
+    const lines = block.split(/\r?\n/);
+    const dataLines = lines
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.replace(/^data:\s?/, ""));
+    if (dataLines.length === 0) {
+      foldedBlocks.push(block);
+      continue;
+    }
+    const payloadText = dataLines.join("\n");
+    if (payloadText === "[DONE]") {
+      continue;
+    }
+    try {
+      const payload = JSON.parse(payloadText);
+      if (isContinuationFoldTerminalPayload(payload)) {
+        continue;
+      }
+    } catch {
+      // Keep malformed non-DONE SSE data exactly as received.
+    }
+    foldedBlocks.push(block);
+  }
+  if (foldedBlocks.length === 0) {
+    return null;
+  }
+  return Buffer.from(`${foldedBlocks.join("\n\n")}\n\n`, "utf8");
+}
+
+function dropContinuationFoldLifecycleChunks(buffer) {
+  const text = Buffer.isBuffer(buffer) ? buffer.toString("utf8") : `${buffer || ""}`;
+  if (!text.trim()) {
+    return Buffer.isBuffer(buffer) ? buffer : Buffer.from(text, "utf8");
+  }
+  const keptBlocks = [];
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    if (!block.trim()) {
+      continue;
+    }
+    const dataLines = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.replace(/^data:\s?/, ""));
+    if (dataLines.length > 0) {
+      const payloadText = dataLines.join("\n");
+      try {
+        if (isContinuationFoldLifecyclePayload(JSON.parse(payloadText))) {
+          continue;
+        }
+      } catch {
+        // Keep malformed SSE data exactly as received.
+      }
+    }
+    keptBlocks.push(block);
+  }
+  return Buffer.from(keptBlocks.length === 0 ? "" : `${keptBlocks.join("\n\n")}\n\n`, "utf8");
+}
+
+function appendContinuationRecoveryFoldRound(requestTracking, buffer) {
+  const foldedBuffer = collectContinuationFoldChunks(buffer);
+  if (!foldedBuffer || foldedBuffer.length === 0) {
+    return;
+  }
+  if (!Array.isArray(requestTracking.continuation_recovery_fold_chunks)) {
+    requestTracking.continuation_recovery_fold_chunks = [];
+  }
+  requestTracking.continuation_recovery_fold_chunks.push(foldedBuffer);
+}
+
+function buildContinuationRecoveryFoldedBody(requestTracking, finalBuffer) {
+  const foldedChunks = Array.isArray(requestTracking?.continuation_recovery_fold_chunks)
+    ? requestTracking.continuation_recovery_fold_chunks.filter((chunk) => chunk?.length > 0)
+    : [];
+  if (foldedChunks.length === 0) {
+    return finalBuffer;
+  }
+  return Buffer.concat([...foldedChunks, dropContinuationFoldLifecycleChunks(finalBuffer)]);
+}
 function buildContinuationMarkerItem(config) {
   return {
     type: "message",
@@ -10211,6 +10308,7 @@ async function handleStreaming({
           recordBlockedResponse(monitor, "stream");
           finalizeModelInsights(monitor, pathname, modelContext);
           if (canContinuationRecover) {
+            appendContinuationRecoveryFoldRound(requestTracking, Buffer.concat(bufferedChunks));
             recordContinuationRecoveryAttempt(monitor, requestTracking);
             const continuationRequest = buildContinuationRecoveryRequestBody(
               config,
@@ -10267,9 +10365,13 @@ async function handleStreaming({
       if (strict502Mode) {
         copyHeadersToClient(upstreamResponse.headers, res);
         res.writeHead(upstreamResponse.status);
+        const rawFinalBody = buildContinuationRecoveryFoldedBody(
+          requestTracking,
+          Buffer.concat(bufferedChunks),
+        );
         const finalBody = requestTracking?.strip_auto_encrypted_reasoning
-          ? stripEncryptedContentFromSseBody(Buffer.concat(bufferedChunks))
-          : Buffer.concat(bufferedChunks);
+          ? stripEncryptedContentFromSseBody(rawFinalBody)
+          : rawFinalBody;
         res.end(finalBody);
       } else {
         res.end();
@@ -10366,6 +10468,7 @@ async function handleStreaming({
         reader.cancel().catch(() => {});
         finalizeModelInsights(monitor, pathname, modelContext);
         if (canContinuationRecover) {
+          appendContinuationRecoveryFoldRound(requestTracking, Buffer.concat([...bufferedChunks, chunkBuffer]));
           recordContinuationRecoveryAttempt(monitor, requestTracking);
           const continuationRequest = buildContinuationRecoveryRequestBody(
             config,

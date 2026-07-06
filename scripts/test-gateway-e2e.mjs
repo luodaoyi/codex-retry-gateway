@@ -244,7 +244,19 @@ function buildStreamEventIds(parsed, count) {
   return Array.from({ length: count }, () => null);
 }
 
-function buildResponsesStreamChunks(parsed, reasoning) {
+function selectStreamOutputText(parsed, sequenceCount = 0) {
+  if (Array.isArray(parsed.test_stream_text_sequence)) {
+    const index = Math.min(sequenceCount, parsed.test_stream_text_sequence.length - 1);
+    const value = parsed.test_stream_text_sequence[index];
+    return value === null || value === undefined ? "" : `${value}`;
+  }
+  if (parsed.test_stream_text !== undefined) {
+    return parsed.test_stream_text === null ? "" : `${parsed.test_stream_text}`;
+  }
+  return "hello";
+}
+
+function buildResponsesStreamChunks(parsed, reasoning, sequenceCount = 0) {
   const models = buildStreamModels(parsed);
   const fingerprints = buildStreamFingerprints(parsed, models.length);
   const responseIds = buildResponseIds(parsed, models.length);
@@ -257,6 +269,27 @@ function buildResponsesStreamChunks(parsed, reasoning) {
     responseIds[responseIds.length - 1] ?? responseIds[0] ?? "resp_stream_1";
   const serviceTier = parsed.test_service_tier ?? "priority";
   const chunks = [];
+
+  if (parsed.test_include_stream_lifecycle) {
+    chunks.push(
+      `data: ${JSON.stringify({
+        type: "response.created",
+        response: {
+          id: finalResponseId,
+          model: finalModel,
+        },
+      })}\n\n`,
+    );
+    chunks.push(
+      `data: ${JSON.stringify({
+        type: "response.in_progress",
+        response: {
+          id: finalResponseId,
+          model: finalModel,
+        },
+      })}\n\n`,
+    );
+  }
 
   if (
     parsed.test_include_stream_reasoning_item ||
@@ -300,7 +333,15 @@ function buildResponsesStreamChunks(parsed, reasoning) {
     }
   }
 
-  chunks.push('data: {"type":"response.output_text.delta","delta":"hello"}\n\n');
+  const outputText = selectStreamOutputText(parsed, sequenceCount);
+  if (outputText) {
+    chunks.push(
+      `data: ${JSON.stringify({
+        type: "response.output_text.delta",
+        delta: outputText,
+      })}\n\n`,
+    );
+  }
 
   models.forEach((model, index) => {
     const deltaPayload = {
@@ -2963,7 +3004,7 @@ function startFakeUpstream(port) {
           }
           createSseResponse(
             res,
-            buildResponsesStreamChunks(parsed, reasoning),
+            buildResponsesStreamChunks(parsed, reasoning, sequenceCount),
             parsed.test_stream_chunk_delay_ms ?? 20,
           );
           return;
@@ -5694,18 +5735,65 @@ async function run() {
       ),
       "续写恢复日志应明确标记 continuation_recovery",
     );
+    const foldedContinuationKey = "continuation-fold-516-then-128";
+    const foldedContinuationResponse = await readSseUntilClose(
+      `http://127.0.0.1:${gatewayPort}/responses`,
+      {
+        model: "gpt-5.5",
+        stream: true,
+        input: "测试续写折叠输出",
+        test_sequence_key: foldedContinuationKey,
+        test_reasoning_sequence: [516, 128],
+        test_include_stream_reasoning_item: true,
+        test_stream_text_sequence: ["fold-part-a", "fold-part-b"],
+        test_include_stream_lifecycle: true,
+      },
+    );
+    assert(
+      foldedContinuationResponse.status === 200,
+      `续写折叠输出应返回 200: ${foldedContinuationResponse.status}`,
+    );
+    assert(
+      foldedContinuationResponse.text.includes("fold-part-a") &&
+        foldedContinuationResponse.text.includes("fold-part-b"),
+      `续写折叠不能只返回最后一轮，应保留同一个下游 SSE 的前后续写段: ${foldedContinuationResponse.text}`,
+    );
+    assert(
+      foldedContinuationResponse.text.includes("[DONE]"),
+      "续写折叠输出应保留最终 [DONE]",
+    );
+    const foldedLifecycleCount = (
+      foldedContinuationResponse.text.match(/"type":"response\.created"/g) || []
+    ).length;
+    assert(
+      foldedLifecycleCount === 1,
+      `续写折叠后同一个下游 SSE 不应出现多个 response.created: ${foldedContinuationResponse.text}`,
+    );
+    assert(
+      foldedContinuationResponse.text.indexOf("response.created") <
+        foldedContinuationResponse.text.indexOf("fold-part-a") &&
+        foldedContinuationResponse.text.indexOf("fold-part-a") <
+          foldedContinuationResponse.text.indexOf("fold-part-b"),
+      `续写折叠应保持 lifecycle -> 第一轮输出 -> 续写输出 的顺序: ${foldedContinuationResponse.text}`,
+    );
+    const foldedContinuationRequests = upstream.responseRequests.filter(
+      (entry) => entry.body?.test_sequence_key === foldedContinuationKey,
+    );
+    assertContinuationRequestShape(foldedContinuationRequests, "续写折叠输出", {
+      expectedOriginalText: "测试续写折叠输出",
+    });
     const statusAfterContinuationRecovery = await fetch(
       `http://127.0.0.1:${gatewayPort}/__codex_retry_gateway/api/status`,
     ).then((response) => response.json());
     assert(
       statusAfterContinuationRecovery.metrics.continuation_recovery_count ===
-        statusBeforeContinuationRecovery.metrics.continuation_recovery_count + 1,
-      "续写恢复命中后应计入续写次数",
+        statusBeforeContinuationRecovery.metrics.continuation_recovery_count + 2,
+      "续写恢复命中后应计入本段触发的续写次数",
     );
     assert(
       statusAfterContinuationRecovery.metrics.continuation_recovery_success_count ===
-        statusBeforeContinuationRecovery.metrics.continuation_recovery_success_count + 1,
-      "续写恢复最终透传成功后应计入续写成功次数",
+        statusBeforeContinuationRecovery.metrics.continuation_recovery_success_count + 2,
+      "续写恢复最终透传成功后应计入本段成功次数",
     );
     assert(
       statusAfterContinuationRecovery.metrics.continuation_recovery_success_ratio ===

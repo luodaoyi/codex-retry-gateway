@@ -14,10 +14,10 @@ TG群：[https://t.me/AI_INPUT_IM](https://t.me/AI_INPUT_IM)
 - 保持 Codex 继续使用现有 `auth.json`
 - 只把 `config.toml` 的当前 provider `base_url` 改成本地网关
 - 非流式默认按 `518*n - 2` 公式匹配 `reasoning_tokens = 516 / 1034 / 1552 / 2070...`，命中后先在网关内部重试，超过上限后才返回 `502`
-- 流式命中时默认使用 Responses 续写恢复；无法续写、续写后仍命中或超过上限时，才回到内部重试 / `502` 保护链路
+- 流式命中时默认使用 Responses 续写恢复；网关会把多轮续写流折叠成一个下游 SSE，避免只返回最后一轮导致输出不完整；无法续写、续写后仍命中或超过上限时，才回到内部重试 / `502` 保护链路
 - 拦截规则默认并推荐 `reasoning_tokens` 长度模式；`final_answer_only_high_xhigh` 仅作为实验收窄规则；续写恢复是流式命中动作，不是拦截规则本身
 - `final_answer_only_high_xhigh` 排除普通 `reasoning_tokens=0`，这类样本只观察落盘；`reasoning_tokens=null/缺失` 或非 0 的 high/xhigh final answer only 仍可命中实验规则
-- `stream_action=continuation_recovery` 是默认流式命中动作，不是单独的拦截规则。命中样本仍由 `intercept_rule_mode` 和 `reasoning_match_mode` 决定：默认公式模式匹配 `516、1034、1552、2070...` 这类所有 `518*n - 2` 值；命中后只对 `/responses` 和 `/v1/responses` 的流式响应尝试续写恢复，使用 `guard_retry_attempts=5` 控制最大内部尝试次数，无法续写时回到既有内部重试 / 拦截逻辑
+- `stream_action=continuation_recovery` 是默认流式命中动作，不是单独的拦截规则。命中样本仍由 `intercept_rule_mode` 和 `reasoning_match_mode` 决定：默认公式模式匹配 `516、1034、1552、2070...` 这类所有 `518*n - 2` 值；命中后只对 `/responses` 和 `/v1/responses` 的流式响应尝试续写恢复，使用 `guard_retry_attempts=5` 控制最大内部尝试次数；多轮续写会折叠为一个 coherent downstream SSE，中间轮的 `response.completed` / `[DONE]` 不会透给客户端，无法续写时回到既有内部重试 / 拦截逻辑
 - 管理页运行状态会实时展示续写恢复效果：`续写次数` 记录本次启动以来触发 Responses 流式续写恢复的次数，`续写成功率` 记录这些续写最终成功透传到客户端的占比
 - 只有显式 `context_compaction` 且 `reasoning_tokens=0` 的压缩响应可豁免拦截；`remote_compaction_v2` 仅是 beta feature 标记，普通 turn 的 516/1034/1552 仍按 `reasoning_tokens` 主规则命中并内部重试
 - 默认同时拦截 root 路径和 `/v1` 路径：
@@ -238,7 +238,7 @@ Issue #11 收口说明：
 - 关闭某一类拦截后，该类命中仍会继续计入规则命中与模型一致性观测，但不会计入实际拦截
 - `guard_retry_attempts` 是“命中后最大内部尝试次数”；普通内部重试、`stream_action=continuation_recovery` 的 Responses 流式续写恢复、以及开启 `retry_upstream_capacity_errors` 后的指定上游 capacity 错误内重试都共用这个次数
 - 运行状态里的“续写次数”表示本次 gateway 启动以来实际触发 Responses 流式续写恢复的次数；“续写成功率”表示这些续写恢复最终成功透传到客户端的占比
-- 续写恢复命中后，第一轮被 gateway 吞掉的命中响应会计入实际拦截；只有后续续写请求最终未再次命中规则、且成功透传给客户端时，才计入续写成功
+- 续写恢复命中后，命中轮会计入实际拦截；网关会保留并折叠命中轮的非终止 SSE 片段，丢弃中间轮 `response.completed` / `[DONE]`，最终只把一个完整下游 SSE 透给客户端；只有后续续写请求最终未再次命中规则、且成功透传给客户端时，才计入续写成功
 - `retry_upstream_capacity_errors` 只匹配 `Selected model is at capacity. Please try a different model.`，普通 `429` / `502` 等 HTTP 错误如果没有命中该特征，会继续原样透传
 - 网关内部重试的每次上游尝试都会计入代理请求总数；每次拿到并检查的响应都会计入被检查响应总数；命中当前拦截规则会计入当前规则命中总数，被吞掉重试或最终拦截会计入实际拦截总数
 - 命中日志里的 `action=internal_retry remaining=N` 表示本次命中只在网关内部吞掉并继续重试，没有把失败状态返回给 Codex；`action=return_status_502` 才表示已经达到重试上限或配置为 `0`，本次会对 Codex 返回拦截状态
@@ -375,7 +375,7 @@ macOS / Linux: ~/.codex-retry-gateway/config/config.json
   - 默认 `continuation_recovery`
   - `strict_502`：标准保护；命中当前拦截规则后在网关内重试，耗尽 `guard_retry_attempts` 后返回 `502`
   - `disconnect`：兼容旧行为；若命中发生在已透传 chunk 之后，则直接断开连接
-  - `continuation_recovery`：命中当前拦截规则且可拿到 encrypted reasoning item 时，对 Responses 流式请求优先尝试内部续写；续写次数同样受 `guard_retry_attempts` 控制，不限定特定 token 公式
+  - `continuation_recovery`：命中当前拦截规则且可拿到 encrypted reasoning item 时，对 Responses 流式请求优先尝试内部续写；续写次数同样受 `guard_retry_attempts` 控制，不限定特定 token 公式；多轮续写会折叠成一个下游 SSE，避免客户端只看到最后一轮或收到多个 completed/DONE
   - `continuation_recovery` 只适用于 Responses 流式路径；Chat Completions、非流式响应、无法收集 encrypted reasoning item、或达到尝试上限时，会回到既有内部重试 / 拦截保护链路
   - 运行状态里的续写成功率按 `continuation_recovery_success_count / continuation_recovery_count` 计算；没有触发续写时显示 `0.00%`
 - `log_match`
