@@ -1,5 +1,41 @@
 # err.md
 
+## 2026-07-06 Responses 流式续写恢复不能只返回最后一轮
+
+### 现象
+
+- `stream_action=continuation_recovery` 命中 516 / 1034 / 518*n-2 后，真实用户反馈续写结果会出现输出不完整。
+- 本机 analytics 元数据显示，大量 `continuation_recovery` 样本在命中轮已经观察到 `has_output_text=true` / `has_final_answer=true`，但旧实现最终只把最后一个成功轮返回给客户端。
+- 多轮续写场景下，前面命中轮已经产生的非终止 SSE 片段会被丢掉，客户端只能看到最后一轮，容易表现为前后文断裂或后半段缺失。
+
+### 根因
+
+- 旧实现把每一轮上游 SSE 缓存在 `bufferedChunks`。
+- 命中续写时直接返回 `{ continuationRecovery: true }` 并进入下一轮请求，没有把当前轮可保留的非终止 SSE 片段带到最终响应。
+- 最后一轮干净结束时只 `res.end(Buffer.concat(bufferedChunks))`，因此天然只能返回最后一轮。
+- 如果简单回退 `internal_retry`，会把“续写恢复”偷换成“重新生成”，不符合 `continuation_recovery` 的产品语义。
+
+### 处理
+
+- 为 Responses 流式续写增加 fold buffer：
+  - 命中续写前，保留当前轮非终止 SSE block。
+  - 丢弃中间轮 `response.completed` / `response.failed` / `response.incomplete` / `[DONE]`。
+  - 最终干净轮返回时，拼接 fold buffer 与最终轮 SSE。
+  - 若最终轮也带 `response.created` / `response.in_progress`，折叠时去掉最终轮重复 lifecycle，避免一个下游 SSE 出现多个 `response.created`。
+- 继续复用既有 `stripEncryptedContentFromSseBody()`，不向客户端暴露 `encrypted_content`。
+- 不改变拦截规则、不改变 `guard_retry_attempts` 语义、不把续写恢复降级成普通内部重试。
+
+### 验证
+
+- 红测：
+  - `node .\scripts\test-gateway-e2e.mjs`
+  - 先失败在 `续写折叠不能只返回最后一轮，应保留同一个下游 SSE 的前后续写段`
+  - 后续补充失败在 `续写折叠后同一个下游 SSE 不应出现多个 response.created`
+- 修复后：
+  - `node --check .\gateway.mjs`
+  - `node --check .\scripts\test-gateway-e2e.mjs`
+  - `node .\scripts\test-gateway-e2e.mjs`
+
 ## 2026-07-02 reasoning 分桶表不应把 count=1 的 token 显示成“高频 token”
 
 ### 现象
