@@ -1,0 +1,3549 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex Retry Gateway</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f2ede3;
+        --panel: rgba(255, 251, 245, 0.9);
+        --panel-strong: #fffdf8;
+        --ink: #1f1d1a;
+        --muted: #6c655c;
+        --accent: #1f6f5f;
+        --accent-soft: #d9efe9;
+        --warn: #a2512f;
+        --line: rgba(31, 29, 26, 0.12);
+        --shadow: 0 18px 40px rgba(47, 34, 14, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Segoe UI Variable", "Bahnschrift", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(31, 111, 95, 0.22), transparent 34%),
+          radial-gradient(circle at top right, rgba(162, 81, 47, 0.18), transparent 26%),
+          linear-gradient(180deg, #f8f4ec 0%, var(--bg) 100%);
+      }
+
+      .shell {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 28px 18px 60px;
+      }
+
+      section[id] {
+        scroll-margin-top: 20px;
+      }
+
+      .side-nav {
+        position: fixed;
+        z-index: 18;
+        top: 28px;
+        left: max(16px, calc((100vw - 1080px) / 2 - 148px));
+        width: 128px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background:
+          linear-gradient(180deg, rgba(255, 251, 245, 0.9), rgba(245, 239, 228, 0.72)),
+          repeating-linear-gradient(135deg, rgba(31, 29, 26, 0.04) 0, rgba(31, 29, 26, 0.04) 1px, transparent 1px, transparent 14px);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(16px);
+      }
+
+      .side-nav-title {
+        margin: 0 0 10px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-align: center;
+      }
+
+      .side-nav-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .side-nav a {
+        display: block;
+        padding: 8px 9px;
+        border-radius: 13px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 1.25;
+        text-decoration: none;
+        text-align: center;
+        border: 1px solid transparent;
+      }
+
+      .side-nav a:hover,
+      .side-nav a:focus-visible {
+        color: var(--accent);
+        border-color: rgba(31, 111, 95, 0.2);
+        background: rgba(31, 111, 95, 0.1);
+        outline: none;
+      }
+
+      @media (max-width: 1339px) {
+        .side-nav {
+          position: static;
+          width: auto;
+          max-width: 1080px;
+          margin: 0 auto;
+          padding: 10px 18px;
+          border-width: 0 0 1px;
+          border-radius: 0 0 20px 20px;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          overflow-x: auto;
+        }
+
+        .side-nav-title {
+          flex: 0 0 auto;
+          margin: 0;
+        }
+
+        .side-nav-list {
+          display: flex;
+          gap: 8px;
+          min-width: max-content;
+        }
+      }
+
+      .hero {
+        padding: 26px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(249, 242, 228, 0.92));
+        box-shadow: var(--shadow);
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .hero-heading {
+        display: flex;
+        align-items: center;
+        gap: 28px;
+        flex-wrap: wrap;
+        margin: 16px 0 8px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(30px, 6vw, 48px);
+        line-height: 1.05;
+      }
+
+      .tg-link {
+        display: inline-flex;
+        align-items: center;
+        min-height: 34px;
+        padding: 7px 12px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.62);
+        color: var(--accent);
+        font-size: 14px;
+        font-weight: 700;
+        text-decoration: none;
+        word-break: break-word;
+      }
+
+      .tg-link:hover {
+        border-color: rgba(31, 111, 95, 0.42);
+        background: var(--accent-soft);
+      }
+
+      .lead {
+        margin: 0;
+        max-width: 720px;
+        font-size: 16px;
+        line-height: 1.7;
+        color: var(--muted);
+      }
+
+      .grid {
+        display: grid;
+        gap: 18px;
+        margin-top: 22px;
+      }
+
+      @media (min-width: 900px) {
+        .grid {
+          grid-template-columns: 1.1fr 0.9fr;
+        }
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(10px);
+      }
+
+      .card-inner {
+        padding: 22px;
+      }
+
+      .card h2 {
+        margin: 0 0 14px;
+        font-size: 18px;
+      }
+
+      .stats {
+        display: grid;
+        gap: 12px;
+      }
+
+      @media (min-width: 640px) {
+        .stats {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      .stat {
+        padding: 14px;
+        border-radius: 18px;
+        background: var(--panel-strong);
+        border: 1px solid rgba(31, 29, 26, 0.08);
+      }
+
+      .stat label {
+        display: block;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      .stat strong,
+      .stat span {
+        display: block;
+        font-size: 15px;
+        line-height: 1.5;
+        word-break: break-word;
+      }
+
+      form {
+        display: grid;
+        gap: 16px;
+      }
+
+      .field {
+        display: grid;
+        gap: 8px;
+      }
+
+      .field label {
+        font-weight: 700;
+        font-size: 14px;
+      }
+
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      input,
+      textarea,
+      select {
+        width: 100%;
+        border: 1px solid rgba(31, 29, 26, 0.14);
+        border-radius: 16px;
+        padding: 12px 14px;
+        font: inherit;
+        color: var(--ink);
+        background: #fffdfa;
+      }
+
+      textarea {
+        min-height: 132px;
+        resize: vertical;
+      }
+
+      .inline-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 10px;
+        padding: 12px 14px;
+        border-radius: 16px;
+        background: var(--panel-strong);
+        border: 1px solid rgba(31, 29, 26, 0.08);
+      }
+
+      .inline-toggle input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        padding: 0;
+        flex: 0 0 auto;
+      }
+
+      .inline-toggle label {
+        margin: 0;
+        cursor: pointer;
+      }
+
+      .rule-mode-field {
+        gap: 6px;
+      }
+
+      .compact-config-field {
+        gap: 6px;
+      }
+
+      .compact-config-field label {
+        font-size: 12px;
+        line-height: 1.25;
+      }
+
+      .compact-config-field input,
+      .compact-config-field select {
+        min-height: 38px;
+        padding: 8px 12px;
+        border-radius: 14px;
+        font-size: 13px;
+        line-height: 1.25;
+        font-weight: 700;
+      }
+
+      .compact-config-field textarea {
+        min-height: 104px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        font-size: 13px;
+        line-height: 1.35;
+        font-weight: 600;
+      }
+
+      .compact-config-field.is-formula-locked label {
+        color: #8fb9d8;
+      }
+
+      .compact-config-field.is-formula-locked input {
+        color: #9db6ca;
+        background: linear-gradient(135deg, rgba(83, 111, 137, 0.20), rgba(19, 31, 44, 0.78));
+        border-color: rgba(126, 180, 220, 0.24);
+        box-shadow: inset 0 0 0 1px rgba(13, 24, 34, 0.45);
+        cursor: not-allowed;
+        opacity: 1;
+      }
+
+      .compact-config-field.is-formula-locked .hint {
+        color: #82aeca;
+      }
+
+      .policy-summary {
+        display: grid;
+        gap: 6px;
+        padding: 13px 14px;
+        border-radius: 16px;
+        background: linear-gradient(135deg, rgba(32, 230, 195, 0.12), rgba(96, 165, 250, 0.08));
+        border: 1px solid rgba(32, 230, 195, 0.24);
+      }
+
+      .policy-summary-title,
+      .setting-group-title {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .policy-summary strong {
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .setting-group {
+        display: grid;
+        gap: 10px;
+        padding: 12px;
+        border-radius: 16px;
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        background: rgba(148, 163, 184, 0.06);
+      }
+
+      .setting-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 10px;
+      }
+
+      @media (max-width: 720px) {
+        .setting-row {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .rule-mode-toggle {
+        min-height: 34px;
+        padding: 7px 10px;
+        border-radius: 12px;
+        gap: 8px;
+      }
+
+      .rule-mode-toggle input[type="radio"],
+      .rule-mode-toggle input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        padding: 0;
+        flex: 0 0 auto;
+      }
+
+      .rule-mode-toggle label {
+        font-size: 12px;
+        line-height: 1.25;
+        font-weight: 700;
+      }
+
+      .checkbox-group {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .checkbox-chip {
+        display: grid;
+        grid-template-columns: 16px minmax(0, 1fr);
+        align-items: center;
+        gap: 8px;
+        min-height: 56px;
+        padding: 10px 14px;
+        border-radius: 14px;
+        border: 1px solid rgba(31, 29, 26, 0.08);
+        background: var(--panel-strong);
+      }
+
+      .checkbox-chip input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        padding: 0;
+        flex: 0 0 auto;
+      }
+
+      .compact-field input {
+        max-width: none;
+      }
+
+      .probe-control-card {
+        display: grid;
+        gap: 14px;
+      }
+
+      .probe-control-title {
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin: 0;
+      }
+
+      .probe-control-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(220px, 1fr);
+        gap: 16px;
+        align-items: stretch;
+      }
+
+      @media (max-width: 899px) {
+        .probe-control-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .probe-control-side {
+        display: grid;
+        gap: 12px;
+        align-content: start;
+      }
+
+      .probe-control-side .field {
+        gap: 6px;
+      }
+
+      .probe-control-side .field label,
+      .probe-control-side .inline-toggle label {
+        font-size: 13px;
+      }
+
+      .probe-control-side .inline-toggle {
+        padding: 10px 12px;
+      }
+
+      .probe-control-side.actions-side {
+        grid-template-rows: auto 1fr;
+      }
+
+      .probe-control-side.actions-side .field {
+        align-content: start;
+      }
+
+      .probe-control-action {
+        display: flex;
+        align-items: flex-end;
+        justify-content: flex-end;
+        min-height: 100%;
+      }
+
+      .probe-control-action .primary {
+        min-width: 0;
+        width: 100%;
+      }
+
+      @media (max-width: 899px) {
+        .probe-control-action {
+          justify-content: stretch;
+        }
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 12px 18px;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .primary {
+        color: white;
+        background: linear-gradient(135deg, #236e60, #184f45);
+      }
+
+      .secondary {
+        color: var(--warn);
+        background: #fff4ee;
+        border: 1px solid rgba(162, 81, 47, 0.2);
+      }
+
+      .message {
+        min-height: 24px;
+        font-size: 14px;
+        line-height: 1.6;
+      }
+
+      .message[data-tone="error"] {
+        color: #9e2f21;
+      }
+
+      .message[data-tone="success"] {
+        color: var(--accent);
+      }
+
+      .footnote {
+        margin-top: 12px;
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      .wide-card {
+        grid-column: 1 / -1;
+      }
+
+      .live-meta {
+        margin: 0 0 12px;
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      .log-output {
+        margin: 0;
+        min-height: 320px;
+        max-height: 420px;
+        overflow: auto;
+        padding: 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(31, 29, 26, 0.08);
+        background: #1e1d1a;
+        color: #f4efe7;
+        font-family: "Cascadia Code", "Consolas", monospace;
+        font-size: 12px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .distribution {
+        display: grid;
+        gap: 12px;
+      }
+
+      .distribution-item {
+        padding: 12px 14px;
+        border-radius: 16px;
+        background: var(--panel-strong);
+        border: 1px solid rgba(31, 29, 26, 0.08);
+      }
+
+      .distribution-item strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .range-bar {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(150px, 1fr)) auto auto auto;
+        gap: 10px;
+        align-items: end;
+        margin-bottom: 16px;
+        padding: 14px;
+        border-radius: 18px;
+        border: 1px solid rgba(31, 111, 95, 0.16);
+        background:
+          linear-gradient(135deg, rgba(31, 111, 95, 0.11), rgba(255, 255, 255, 0.68)),
+          repeating-linear-gradient(90deg, rgba(31, 111, 95, 0.06) 0, rgba(31, 111, 95, 0.06) 1px, transparent 1px, transparent 14px);
+      }
+
+      .range-bar .field {
+        gap: 6px;
+      }
+
+      .range-bar button {
+        min-height: 43px;
+        padding: 10px 14px;
+        border-radius: 14px;
+      }
+
+      .reasoning-range-toolbar {
+        grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) repeat(5, auto);
+        gap: 8px;
+        align-items: end;
+        margin-bottom: 14px;
+        padding: 12px;
+        font-size: 12px;
+      }
+
+      .reasoning-range-toolbar .field {
+        gap: 4px;
+      }
+
+      .reasoning-range-toolbar .field label {
+        font-size: 12px;
+      }
+
+      .reasoning-range-toolbar :is(input, button) {
+        min-height: 36px;
+        padding: 7px 12px;
+        border-radius: 13px;
+        font-size: 12px;
+      }
+
+      .range-chip {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        width: fit-content;
+        max-width: 100%;
+        min-height: 34px;
+        margin: 0 0 14px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: rgba(31, 111, 95, 0.1);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .range-status-chip {
+        color: var(--muted);
+        background: rgba(148, 163, 184, 0.12);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        box-shadow: none;
+      }
+
+      .range-chip-rail {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        margin: 14px 0;
+      }
+
+      .range-chip-rail .range-chip {
+        margin: 0;
+      }
+
+      .range-chip-rail #reasoningExportProgress {
+        width: min(100%, 440px);
+      }
+
+      .historical-import-control-stack {
+        display: grid;
+        justify-items: start;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .historical-import-status {
+        min-width: min(100%, 520px);
+        min-height: 46px;
+        justify-content: center;
+        padding: 10px 18px;
+        line-height: 1.5;
+        text-align: center;
+      }
+
+      .historical-import-status-text {
+        display: block;
+        width: 100%;
+      }
+
+      .historical-import-status[data-progress-active="false"] .bar-row {
+        display: none;
+      }
+
+      .bar-row {
+        display: block;
+        width: min(420px, 70vw);
+        min-height: 8px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(31, 29, 26, 0.1);
+      }
+
+      .bar-row span {
+        display: block;
+        min-height: 8px;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #1f6f5f, #8ccfb7);
+      }
+
+      .chart-grid {
+        display: grid;
+        gap: 14px;
+        margin: 16px 0;
+      }
+
+      @media (min-width: 760px) {
+        .chart-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      .signal-chart {
+        display: grid;
+        gap: 10px;
+        min-height: 142px;
+        padding: 14px;
+        border-radius: 18px;
+        border: 1px solid rgba(31, 29, 26, 0.08);
+        background:
+          linear-gradient(180deg, rgba(255, 253, 248, 0.92), rgba(247, 242, 233, 0.86)),
+          repeating-linear-gradient(0deg, transparent 0, transparent 23px, rgba(31, 111, 95, 0.05) 24px);
+      }
+
+      .signal-bar {
+        display: grid;
+        grid-template-columns: minmax(92px, 0.36fr) minmax(120px, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        font-size: 12px;
+      }
+
+      .signal-bar-track {
+        min-height: 10px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(31, 29, 26, 0.08);
+      }
+
+      .signal-bar-fill {
+        display: block;
+        min-height: 10px;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #1f6f5f, #8ccfb7);
+      }
+
+      .reasoning-subtitle {
+        margin: 18px 0 10px;
+        font-size: 14px;
+        color: var(--muted);
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        border-radius: 18px;
+        border: 1px solid rgba(31, 29, 26, 0.08);
+        background: var(--panel-strong);
+      }
+
+      .coverage-table-wrap {
+        width: 100%;
+        max-width: none;
+        margin: 0;
+        overflow-x: hidden;
+      }
+
+      .coverage-table-wrap table {
+        width: 100%;
+        min-width: 0;
+        table-layout: fixed;
+      }
+
+      .coverage-table-wrap :is(th, td) {
+        text-align: center;
+        vertical-align: middle;
+      }
+
+      .scroll-table-wrap {
+        max-height: 380px;
+        overflow: auto;
+      }
+
+      .scroll-table-wrap table {
+        width: max-content;
+        min-width: 100%;
+      }
+
+      .scroll-table-wrap :is(th, td) {
+        white-space: nowrap;
+      }
+
+      .table-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin: 18px 0 10px;
+      }
+
+      .table-toolbar .reasoning-subtitle {
+        margin: 0;
+      }
+
+      .compact-select {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .compact-select select {
+        min-height: 34px;
+        padding: 6px 10px;
+        border-radius: 10px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 900px;
+      }
+
+      th,
+      td {
+        padding: 12px 14px;
+        border-bottom: 1px solid rgba(31, 29, 26, 0.08);
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      th {
+        background: rgba(31, 111, 95, 0.08);
+      }
+
+      .risk-note {
+        margin: 0 0 14px;
+        padding: 12px 14px;
+        border-radius: 16px;
+        background: #fff8ef;
+        border: 1px solid rgba(162, 81, 47, 0.18);
+        color: #6b3b1f;
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      .evidence-details {
+        min-width: 220px;
+      }
+
+      .evidence-details summary {
+        cursor: pointer;
+        color: var(--accent);
+        font-weight: 700;
+      }
+
+      .evidence-log-output {
+        margin: 8px 0 0;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(31, 29, 26, 0.04);
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: "Cascadia Code", "Consolas", monospace;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      code {
+        font-family: "Cascadia Code", "Consolas", monospace;
+        font-size: 0.92em;
+      }
+
+      html[data-theme="dark"] {
+        color-scheme: dark;
+        --bg: #06111d;
+        --panel: #132236;
+        --panel-strong: #17283d;
+        --ink: #f4f8ff;
+        --muted: #94a3b8;
+        --accent: #20e6c3;
+        --accent-soft: rgba(32, 230, 195, 0.12);
+        --warn: #fb7185;
+        --line: rgba(148, 163, 184, 0.18);
+        --shadow: none;
+      }
+
+      html[data-theme="dark"] body {
+        background: #06111d;
+      }
+
+      html[data-theme="dark"] .hero,
+      html[data-theme="dark"] .card {
+        background: var(--panel);
+        border-color: var(--line);
+        box-shadow: none;
+        backdrop-filter: none;
+      }
+
+      html[data-theme="dark"] .hero {
+        background: #132236;
+      }
+
+      html[data-theme="dark"] .stat,
+      html[data-theme="dark"] .inline-toggle,
+      html[data-theme="dark"] .checkbox-chip,
+      html[data-theme="dark"] .range-bar,
+      html[data-theme="dark"] .signal-chart,
+      html[data-theme="dark"] .table-wrap {
+        background: var(--panel-strong);
+        border-color: rgba(148, 163, 184, 0.16);
+      }
+
+      html[data-theme="dark"] .eyebrow,
+      html[data-theme="dark"] .tg-link {
+        color: var(--accent);
+        background: rgba(32, 230, 195, 0.08);
+        border-color: rgba(32, 230, 195, 0.2);
+      }
+
+      html[data-theme="dark"] input,
+      html[data-theme="dark"] textarea,
+      html[data-theme="dark"] select {
+        color: var(--ink);
+        background: #0b1728;
+        border-color: rgba(148, 163, 184, 0.22);
+      }
+
+      html[data-theme="dark"] input:focus,
+      html[data-theme="dark"] textarea:focus {
+        outline: 2px solid rgba(32, 230, 195, 0.28);
+        border-color: rgba(32, 230, 195, 0.5);
+      }
+
+      html[data-theme="dark"] .primary {
+        color: #03131f;
+        background: var(--accent);
+      }
+
+      html[data-theme="dark"] .secondary {
+        color: #fecdd3;
+        background: rgba(251, 113, 133, 0.12);
+        border: 1px solid rgba(251, 113, 133, 0.24);
+      }
+
+      html[data-theme="dark"] .range-chip {
+        color: var(--accent);
+        background: rgba(32, 230, 195, 0.1);
+      }
+
+      html[data-theme="dark"] .range-status-chip {
+        color: #cbd5e1;
+        background: rgba(148, 163, 184, 0.12);
+        border-color: rgba(148, 163, 184, 0.22);
+      }
+
+      html[data-theme="dark"] .signal-bar-track {
+        background: rgba(148, 163, 184, 0.16);
+      }
+
+      html[data-theme="dark"] .log-output,
+      html[data-theme="dark"] .evidence-log-output {
+        background: #06111d;
+        border-color: rgba(32, 230, 195, 0.16);
+        color: #c7f9ef;
+      }
+
+      html[data-theme="dark"] th,
+      html[data-theme="dark"] td {
+        color: #cbd5e1;
+        border-bottom-color: rgba(148, 163, 184, 0.12);
+      }
+
+      html[data-theme="dark"] th {
+        color: var(--ink);
+        background: rgba(148, 163, 184, 0.08);
+      }
+
+      html[data-theme="dark"] .risk-note {
+        color: #cbd5e1;
+        background: #0f1d2f;
+        border-color: rgba(148, 163, 184, 0.14);
+      }
+
+      html[data-theme="dark"] .side-nav {
+        background:
+          linear-gradient(180deg, rgba(15, 29, 47, 0.94), rgba(11, 23, 40, 0.88)),
+          repeating-linear-gradient(135deg, rgba(148, 163, 184, 0.05) 0, rgba(148, 163, 184, 0.05) 1px, transparent 1px, transparent 14px);
+        border-color: rgba(148, 163, 184, 0.14);
+        box-shadow: 0 20px 45px rgba(0, 0, 0, 0.26);
+      }
+
+      html[data-theme="dark"] .side-nav-title {
+        color: #9fb2c8;
+      }
+
+      html[data-theme="dark"] .side-nav a {
+        color: #9aaabc;
+      }
+
+      html[data-theme="dark"] .side-nav a:hover,
+      html[data-theme="dark"] .side-nav a:focus-visible {
+        color: var(--accent);
+        background: rgba(32, 230, 195, 0.08);
+        border-color: rgba(32, 230, 195, 0.18);
+      }
+
+      html[data-theme="dark"] .message[data-tone="error"] {
+        color: #fb7185;
+      }
+
+      .theme-toggle {
+        position: fixed;
+        left: 18px;
+        bottom: 18px;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 42px;
+        padding: 0 14px;
+        border-radius: 12px;
+        border: 1px solid rgba(31, 29, 26, 0.12);
+        background: rgba(255, 251, 245, 0.94);
+        color: var(--ink);
+        box-shadow: 0 10px 28px rgba(47, 34, 14, 0.16);
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      html[data-theme="dark"] .theme-toggle {
+        color: #e2e8f0;
+        background: #101827;
+        border-color: rgba(148, 163, 184, 0.14);
+        box-shadow: none;
+      }
+
+      .theme-toggle-icon {
+        color: #f59e0b;
+        font-size: 17px;
+        line-height: 1;
+      }
+
+      @media (max-width: 720px) {
+        .range-bar {
+          grid-template-columns: 1fr;
+        }
+
+        .theme-toggle {
+          left: 12px;
+          bottom: 12px;
+          min-height: 38px;
+          padding: 0 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="side-nav" id="sideNav" aria-label="快速导航">
+      <p class="side-nav-title">快速导航</p>
+      <div class="side-nav-list">
+        <a href="#topSection">顶部</a>
+        <a href="#statusSection">运行状态</a>
+        <a href="#rulesSection">拦截规则</a>
+        <a href="#reasoningBehaviorSection">行为统计</a>
+        <a href="#historicalImportSection">历史导入</a>
+        <a href="#modelSection">被动探针</a>
+        <a href="#probeSection">主动探针</a>
+        <a href="#logsSection">实时日志</a>
+      </div>
+    </nav>
+    <div class="shell">
+      <section class="hero" id="topSection">
+        <div class="eyebrow">本地管理页</div>
+        <div class="hero-heading">
+          <h1>Codex Retry Gateway</h1>
+          <a class="tg-link" href="https://t.me/AI_INPUT_IM" target="_blank" rel="noopener noreferrer">TG群：https://t.me/AI_INPUT_IM</a>
+        </div>
+        <p class="lead">
+          这个页面直接挂在正在运行的 gateway 上。你可以在这里查看当前接管状态、修改 reasoning 拦截条件，并一键恢复 Codex 原设置。
+        </p>
+      </section>
+
+      <div class="grid">
+        <section class="card" id="statusSection">
+          <div class="card-inner">
+            <h2>运行状态</h2>
+            <div class="stats">
+              <div class="stat"><label>监听地址</label><strong id="listenValue">-</strong></div>
+              <div class="stat"><label>真实上游</label><span id="upstreamValue">-</span></div>
+              <div class="stat"><label>当前 Provider</label><span id="providerValue">-</span></div>
+              <div class="stat"><label>当前 Codex Base URL</label><span id="codexBaseUrlValue">-</span></div>
+              <div class="stat"><label>Config 文件</label><span id="configPathValue">-</span></div>
+              <div class="stat"><label>备份文件</label><span id="backupPathValue">-</span></div>
+              <div class="stat"><label>本次启动时间</label><span id="startedAtValue">-</span></div>
+              <div class="stat"><label>代理请求总数</label><strong id="proxyRequestCountValue">0</strong></div>
+              <div class="stat"><label>被检查响应总数</label><strong id="inspectedCountValue">0</strong></div>
+              <div class="stat"><label>当前规则命中总数</label><strong id="matchedCountValue">0</strong></div>
+              <div class="stat"><label>实际拦截总数</label><strong id="blockedCountValue">0</strong></div>
+              <div class="stat"><label>实际拦截占比</label><strong id="blockedRatioValue">0.00%</strong></div>
+              <div class="stat"><label>流式规则命中</label><strong id="matchedStreamingCountValue">0</strong></div>
+              <div class="stat"><label>非流式规则命中</label><strong id="matchedNonStreamingCountValue">0</strong></div>
+              <div class="stat"><label>流式实际拦截</label><strong id="blockedStreamingCountValue">0</strong></div>
+              <div class="stat"><label>非流式实际拦截</label><strong id="blockedNonStreamingCountValue">0</strong></div>
+              <div class="stat"><label>续写次数</label><strong id="continuationRecoveryCountValue">0</strong></div>
+              <div class="stat"><label>续写成功率</label><strong id="continuationRecoverySuccessRatioValue">0.00%</strong></div>
+            </div>
+            <p class="footnote" id="statsFootnote">
+              如果“当前 Codex Base URL”已经是本机监听地址，就说明当前 Codex 已经被这个 gateway 接管。统计口径按本次 gateway 启动以来累计。
+            </p>
+          </div>
+        </section>
+
+        <section class="card" id="rulesSection">
+          <div class="card-inner">
+            <h2>拦截规则</h2>
+            <form id="configForm">
+              <div class="policy-summary">
+                <div class="policy-summary-title">当前生效策略</div>
+                <strong id="policySummaryValue">正在读取当前策略...</strong>
+              </div>
+
+              <div class="setting-group">
+                <div class="setting-group-title">命中条件</div>
+                <div class="field rule-mode-field">
+                  <label>规则模式</label>
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="interceptRuleModeReasoningTokensInput" name="intercept_rule_mode" type="radio" value="reasoning_tokens" />
+                    <label for="interceptRuleModeReasoningTokensInput">reasoning_tokens 长度（推荐）</label>
+                  </div>
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="interceptRuleModeFinalOnlyInput" name="intercept_rule_mode" type="radio" value="final_answer_only_high_xhigh" />
+                    <label for="interceptRuleModeFinalOnlyInput">final answer only（实验，排除 0）</label>
+                  </div>
+                  <div class="hint">推荐使用 reasoning_tokens；final answer only 仅作实验收窄规则。</div>
+                </div>
+
+                <div class="field compact-config-field">
+                  <label for="reasoningMatchModeSelect">命中条件来源</label>
+                  <select id="reasoningMatchModeSelect" name="reasoning_match_mode">
+                    <option value="manual">手动填写 reasoning_equals</option>
+                    <option value="formula_518n_minus_2">518*n - 2 规则</option>
+                  </select>
+                  <div class="hint">518*n - 2 是公式规则，会匹配 516、1034、1552、2070 等所有符合公式的 reasoning_tokens，不只是前三个数字。</div>
+                </div>
+
+                <div id="reasoningEqualsField" class="field compact-config-field">
+                  <label for="reasoningInput">reasoning_equals（手动模式）</label>
+                  <input id="reasoningInput" name="reasoning_equals" type="text" placeholder="例如：516, 1034, 1552" />
+                  <div id="reasoningEqualsHint" class="hint">手动模式下多个值用英文逗号或空格分隔；选择 518*n - 2 规则时，这里只保留为回退/参考列表。</div>
+                </div>
+              </div>
+
+              <div class="setting-group">
+                <div class="setting-group-title">命中后处理</div>
+                <div class="field rule-mode-field">
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="streamActionStrict502Input" name="stream_action" type="radio" value="strict_502" />
+                    <label for="streamActionStrict502Input">标准保护：网关内重试，耗尽后返回 502</label>
+                  </div>
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="streamActionContinuationRecoveryInput" name="stream_action" type="radio" value="continuation_recovery" />
+                    <label for="streamActionContinuationRecoveryInput">续写恢复：Responses 流式先续写</label>
+                  </div>
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="streamActionDisconnectInput" name="stream_action" type="radio" value="disconnect" />
+                    <label for="streamActionDisconnectInput">兼容旧行为：已透传时断开连接</label>
+                  </div>
+                  <div class="hint">续写恢复不是单独的拦截规则；它只改变流式 Responses 命中后的内部动作，命中条件仍由上面的规则模式决定。</div>
+                </div>
+              </div>
+
+              <div class="setting-group">
+                <div class="setting-group-title">重试与范围</div>
+                <div class="setting-row">
+                  <div class="field compact-config-field">
+                    <label for="guardRetryAttemptsInput">命中后最大内部尝试次数</label>
+                    <input id="guardRetryAttemptsInput" name="guard_retry_attempts" type="number" min="0" step="1" required />
+                  </div>
+                  <div class="field compact-config-field">
+                    <label for="statusCodeInput">最终返回状态码</label>
+                    <input id="statusCodeInput" name="non_stream_status_code" type="number" min="100" max="599" />
+                  </div>
+                </div>
+                <div class="hint">所有命中后内部动作共用这里的次数：普通内部重试、Responses 流式续写恢复、以及开启 capacity 选项后的上游 capacity 错误内重试；0 表示不做内部尝试。</div>
+                <div class="field rule-mode-field">
+                  <label>拦截范围</label>
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="interceptStreamingInput" name="intercept_streaming" type="checkbox" />
+                    <label for="interceptStreamingInput">流式</label>
+                  </div>
+                  <div class="inline-toggle rule-mode-toggle">
+                    <input id="interceptNonStreamingInput" name="intercept_non_streaming" type="checkbox" />
+                    <label for="interceptNonStreamingInput">非流式</label>
+                  </div>
+                  <div class="hint">当前范围：<strong id="interceptModeValue">流式+非流式</strong></div>
+                </div>
+              </div>
+
+              <div class="inline-toggle rule-mode-toggle">
+                <input id="retryUpstreamCapacityErrorsInput" name="retry_upstream_capacity_errors" type="checkbox" />
+                <label for="retryUpstreamCapacityErrorsInput">上游 capacity 错误内重试</label>
+              </div>
+              <div class="hint">仅匹配 “Selected model is at capacity. Please try a different model.”，普通 429 / 502 仍按原样透传。</div>
+
+              <div class="inline-toggle rule-mode-toggle">
+                <input id="logMatchInput" name="log_match" type="checkbox" />
+                <label for="logMatchInput">log_match 命中时写日志</label>
+              </div>
+
+              <div class="field compact-config-field">
+                <label for="endpointsInput">高级：endpoints</label>
+                <textarea id="endpointsInput" name="endpoints" placeholder="/responses"></textarea>
+                <div class="hint">每行一个路径。默认建议同时保留 root 与 /v1 两套路径。</div>
+              </div>
+
+              <div class="actions">
+                <button class="primary" id="saveButton" type="submit">保存并立即生效</button>
+                <button class="secondary" id="restoreButton" type="button">恢复 Codex 原设置并关闭网关</button>
+              </div>
+            </form>
+            <div class="message" id="messageBox"></div>
+            <p class="footnote">
+              点击“恢复”后，gateway 会停掉，所以这个页面会失联。这是预期行为，不是报错。
+            </p>
+          </div>
+        </section>
+        <section class="card wide-card" id="logsSection">
+          <div class="card-inner">
+            <h2>实时日志</h2>
+            <p class="live-meta" id="logsMeta">正在读取日志...</p>
+            <pre class="log-output" id="logsOutput">正在读取日志...</pre>
+          </div>
+        </section>
+
+        <section class="card wide-card" id="reasoningBehaviorSection">
+          <div class="card-inner">
+            <h2>reasoning 行为统计</h2>
+            <p class="risk-note" id="reasoningExportMeta">
+              统计结果只表示可观测结构信号，用于发现候选异常特征，不代表最终归因，也不证明模型内部没有思考。final answer only / commentary observed 不是互补关系，剩余样本可能是 tool call、reasoning item 或普通 output 组合。516 会被单独观察，但不会在这里被写死为异常结论。
+            </p>
+            <div class="range-bar reasoning-range-toolbar">
+              <div class="field">
+                <label for="reasoningDateFromInput">开始日期</label>
+                <input id="reasoningDateFromInput" type="date" />
+              </div>
+              <div class="field">
+                <label for="reasoningDateToInput">结束日期</label>
+                <input id="reasoningDateToInput" type="date" />
+              </div>
+              <button class="secondary" id="reasoningRangeTodayButton" type="button">今天</button>
+              <button class="secondary" id="reasoningRangeWeekButton" type="button">近 7 天</button>
+              <button class="primary" id="reasoningRangeApplyButton" type="button">应用时间段</button>
+              <button class="secondary" id="reasoningExportJsonButton" type="button">导出 JSON</button>
+              <button class="secondary" id="reasoningExportCsvButton" type="button">导出 CSV</button>
+            </div>
+            <p class="reasoning-subtitle">特征分析条件</p>
+            <div class="range-bar">
+              <div class="field">
+                <label for="reasoningAnalysisModelFamilyInput">模型家族</label>
+                <input id="reasoningAnalysisModelFamilyInput" type="text" value="gpt-5.4,gpt-5.5" />
+              </div>
+              <div class="field">
+                <label for="reasoningAnalysisEffortInput">reasoning.effort</label>
+                <input id="reasoningAnalysisEffortInput" type="text" value="low,medium,high,xhigh" />
+              </div>
+              <div class="field">
+                <label for="reasoningAnalysisTokenInput">reasoning_tokens</label>
+                <input id="reasoningAnalysisTokenInput" type="text" value="516" />
+              </div>
+              <div class="field">
+                <label for="reasoningAnalysisFinalOnlySelect">final answer only</label>
+                <select id="reasoningAnalysisFinalOnlySelect">
+                  <option value="true" selected>是</option>
+                  <option value="false">否</option>
+                  <option value="any">任意</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="reasoningAnalysisCommentarySelect">commentary observed</label>
+                <select id="reasoningAnalysisCommentarySelect">
+                  <option value="not_observed" selected>not observed</option>
+                  <option value="observed">observed</option>
+                  <option value="any">任意</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="reasoningAnalysisStatusSelect">状态</label>
+                <select id="reasoningAnalysisStatusSelect">
+                  <option value="any" selected>任意</option>
+                  <option value="success">成功</option>
+                  <option value="blocked">拦截</option>
+                  <option value="upstream_failed">上游失败</option>
+                  <option value="gateway_rejected">gateway 拒绝</option>
+                </select>
+              </div>
+            </div>
+            <div class="actions" style="margin-bottom: 14px;">
+              <label class="inline-toggle" for="reasoningAnalysisIncludeRetriesInput">
+                <input id="reasoningAnalysisIncludeRetriesInput" type="checkbox" checked />
+                <span>包含 gateway 内部重试</span>
+              </label>
+              <label class="inline-toggle" for="reasoningAnalysisIncludeBlockedInput">
+                <input id="reasoningAnalysisIncludeBlockedInput" type="checkbox" checked />
+                <span>包含已拦截样本</span>
+              </label>
+              <button class="primary" id="reasoningAnalyzeButton" type="button">运行特征分析</button>
+            </div>
+            <div class="stats">
+              <div class="stat"><label>analysis_value</label><strong id="reasoningAnalysisValue">-</strong></div>
+              <div class="stat"><label>conclusion</label><strong id="reasoningAnalysisConclusion">-</strong></div>
+              <div class="stat"><label>候选命中</label><strong id="reasoningAnalysisCandidateSummaryValue">-</strong></div>
+              <div class="stat"><label>基线对比</label><span id="reasoningAnalysisBaselineValue">-</span></div>
+            </div>
+            <p class="reasoning-subtitle">field_coverage</p>
+            <div class="table-wrap coverage-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>字段</th>
+                    <th>覆盖率</th>
+                  </tr>
+                </thead>
+                <tbody id="reasoningAnalysisCoverageBody">
+                  <tr><td colspan="2">尚未运行特征分析</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="range-chip-rail">
+              <div class="range-chip" id="reasoningExportProgress" hidden>
+                <div id="reasoningExportProgressText">后台导出准备中...</div>
+                <div class="bar-row" aria-hidden="true"><span id="reasoningExportProgressFill" style="width: 0%;"></span></div>
+                <a id="reasoningExportDownloadLink" href="#" target="_blank" rel="noopener noreferrer" hidden>下载导出文件</a>
+              </div>
+              <div class="range-chip range-status-chip" id="reasoningRangeChip">当前时间窗：默认最近窗口</div>
+            </div>
+            <div class="stats">
+              <div class="stat"><label>样本总数</label><strong id="reasoningTotalSamplesValue">0</strong></div>
+              <div class="stat"><label>final answer only</label><strong id="reasoningFinalOnlyRatioValue">0.00%</strong></div>
+              <div class="stat"><label>commentary observed</label><strong id="reasoningCommentaryRatioValue">0.00%</strong></div>
+              <div class="stat"><label>平均总耗时</label><strong id="reasoningAvgDurationValue">0 ms</strong></div>
+              <div class="stat"><label>平均 output TPS</label><strong id="reasoningAvgOutputTpsValue">0</strong></div>
+              <div class="stat"><label>平均归一化 TPS</label><strong id="reasoningAvgAdjustedTpsValue">0</strong></div>
+            </div>
+            <div class="chart-grid">
+              <div class="signal-chart" id="reasoningTopTokensChart">暂无 reasoning token 分布</div>
+              <div class="signal-chart" id="reasoningOutputTpsChart">暂无 output TPS 分布</div>
+            </div>
+            <p class="reasoning-subtitle">按模型家族</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>模型家族</th>
+                    <th>样本</th>
+                    <th>占比</th>
+                    <th>final answer only</th>
+                    <th>commentary observed</th>
+                    <th>平均耗时</th>
+                    <th>平均 TPS</th>
+                    <th>重复 token</th>
+                  </tr>
+                </thead>
+                <tbody id="reasoningByModelFamilyBody">
+                  <tr><td colspan="8">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="reasoning-subtitle">按思考等级</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>reasoning.effort</th>
+                    <th>样本</th>
+                    <th>占比</th>
+                    <th>final answer only</th>
+                    <th>commentary observed</th>
+                    <th>平均耗时</th>
+                    <th>归一化 TPS</th>
+                    <th>重复 token</th>
+                  </tr>
+                </thead>
+                <tbody id="reasoningByEffortBody">
+                  <tr><td colspan="8">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="reasoning-subtitle">模型家族 × 思考等级</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>组合</th>
+                    <th>样本</th>
+                    <th>占比</th>
+                    <th>final answer only</th>
+                    <th>commentary observed</th>
+                    <th>平均耗时</th>
+                    <th>平均 TPS</th>
+                    <th>重复 token</th>
+                  </tr>
+                </thead>
+                <tbody id="reasoningByFamilyEffortBody">
+                  <tr><td colspan="8">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="table-toolbar">
+              <p class="reasoning-subtitle">按 reasoning_tokens</p>
+              <label class="compact-select" for="reasoningTokenTableLimitSelect">
+                显示数量
+                <select id="reasoningTokenTableLimitSelect">
+                  <option value="10" selected>10</option>
+                  <option value="20">20</option>
+                  <option value="30">30</option>
+                  <option value="50">50</option>
+                </select>
+              </label>
+            </div>
+            <div class="table-wrap scroll-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>reasoning_tokens</th>
+                    <th>样本</th>
+                    <th>final answer only</th>
+                    <th>commentary observed</th>
+                    <th>平均耗时</th>
+                    <th>平均 TPS</th>
+                    <th>时序偏差</th>
+                    <th>最近出现</th>
+                  </tr>
+                </thead>
+                <tbody id="reasoningByTokenBody">
+                  <tr><td colspan="8">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="table-toolbar">
+              <p class="reasoning-subtitle">候选特征组合</p>
+              <label class="compact-select" for="reasoningCandidatePatternLimitSelect">
+                显示数量
+                <select id="reasoningCandidatePatternLimitSelect">
+                  <option value="10" selected>10</option>
+                  <option value="20">20</option>
+                  <option value="30">30</option>
+                  <option value="50">50</option>
+                </select>
+              </label>
+            </div>
+            <div class="table-wrap scroll-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>特征组合</th>
+                    <th>样本</th>
+                    <th>占比</th>
+                    <th>平均耗时</th>
+                    <th>平均 TPS</th>
+                    <th>时序偏差</th>
+                    <th>最近出现</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody id="reasoningCandidatePatternsBody">
+                  <tr><td colspan="8">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="table-toolbar">
+              <p class="reasoning-subtitle">最近样本</p>
+              <label class="compact-select" for="reasoningRecentSamplesLimitSelect">
+                显示数量
+                <select id="reasoningRecentSamplesLimitSelect">
+                  <option value="10" selected>10</option>
+                  <option value="20">20</option>
+                  <option value="30">30</option>
+                  <option value="50">50</option>
+                </select>
+              </label>
+            </div>
+            <div class="table-wrap scroll-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>路径</th>
+                    <th>模型</th>
+                    <th>模型家族</th>
+                    <th>思考等级</th>
+                    <th>reasoning</th>
+                    <th>output</th>
+                    <th>耗时</th>
+                    <th>TPS</th>
+                    <th>final answer only</th>
+                    <th>commentary observed</th>
+                    <th>命中/拦截</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody id="reasoningRecentSamplesBody">
+                  <tr><td colspan="13">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="card wide-card" id="historicalImportSection">
+          <div class="card-inner">
+            <h2>历史导入分析</h2>
+            <p class="risk-note">
+              面向本机 CC Switch、Codex SQLite 日志和 Codex session JSONL 的后台聚合分析。大文件只做摘要和文件级索引，不读取完整 prompt / answer，不进入实时代理链路。
+            </p>
+            <div class="historical-import-control-stack">
+              <button class="primary" id="historicalImportRunButton" type="button">预检并分析</button>
+              <div class="range-chip historical-import-status" id="historicalImportProgress" data-progress-active="false">
+                <div class="historical-import-status-text" id="historicalImportProgressText">历史导入分析未开始，可以后台慢慢跑，不影响 gateway 正常代理。</div>
+                <div class="bar-row" aria-hidden="true"><span id="historicalImportProgressFill" style="width: 0%;"></span></div>
+              </div>
+            </div>
+            <p class="footnote" id="historicalImportSummaryValue">历史导入分析尚无结果。</p>
+            <p class="reasoning-subtitle">特征分析大盘</p>
+            <div class="stats">
+              <div class="stat"><label>analysis_value</label><strong id="historicalImportAnalysisValue">-</strong></div>
+              <div class="stat"><label>conclusion</label><strong id="historicalImportAnalysisConclusion">-</strong></div>
+              <div class="stat"><label>候选命中</label><strong id="historicalImportCandidateSummaryValue">-</strong></div>
+              <div class="stat"><label>基线对比</label><span id="historicalImportBaselineValue">-</span></div>
+            </div>
+            <p class="reasoning-subtitle">field_coverage</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>字段</th>
+                    <th>覆盖率</th>
+                  </tr>
+                </thead>
+                <tbody id="historicalImportCoverageBody">
+                  <tr><td colspan="2">历史导入尚未完成预检</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="reasoning-subtitle">历史数据源</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>类型</th>
+                    <th>状态</th>
+                    <th>行/文件数</th>
+                    <th>路径</th>
+                  </tr>
+                </thead>
+                <tbody id="historicalImportSourcesBody">
+                  <tr><td colspan="4">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="reasoning-subtitle">CC Switch 按模型聚合</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>模型</th>
+                    <th>请求数</th>
+                    <th>成功</th>
+                    <th>失败</th>
+                    <th>输入 token</th>
+                    <th>输出 token</th>
+                    <th>平均耗时</th>
+                  </tr>
+                </thead>
+                <tbody id="historicalImportCcModelsBody">
+                  <tr><td colspan="7">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="reasoning-subtitle">Codex 日志关键词</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>关键词 / 等级</th>
+                    <th>次数</th>
+                  </tr>
+                </thead>
+                <tbody id="historicalImportCodexLogsBody">
+                  <tr><td colspan="2">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="reasoning-subtitle">Codex session 大文件索引</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>文件</th>
+                    <th>大小</th>
+                    <th>修改时间</th>
+                  </tr>
+                </thead>
+                <tbody id="historicalImportSessionsBody">
+                  <tr><td colspan="3">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="card wide-card" id="modelSection">
+          <div class="card-inner">
+            <h2>模型家族一致性（被动探针）</h2>
+            <p class="risk-note">
+              本地模型表示本机配置或请求声明；上游模型表示上游自报。声明一致不等于已证明真实运行一致。
+              声明一致率只按拿到上游声明的样本计算，未声明样本不会计入分母。
+              400K 家族异常只表示行为上疑似不符合 1M 家族。单请求模型漂移与疑似请求内重建/重试都按高风险展示，
+              但仍然只能基于响应信号推断，不能直接确认缓存重建。
+            </p>
+            <div class="stats">
+              <div class="stat"><label>声明一致率</label><strong id="modelMatchRatioValue">0.00%</strong></div>
+              <div class="stat"><label>声明不一致次数</label><strong id="modelMismatchCountValue">0</strong></div>
+              <div class="stat"><label>400K 家族异常</label><strong id="lowContextFamilyCountValue">0</strong></div>
+              <div class="stat"><label>单请求模型漂移</label><strong id="modelDriftCountValue">0</strong></div>
+              <div class="stat"><label>指纹漂移次数</label><strong id="fingerprintDriftCountValue">0</strong></div>
+              <div class="stat"><label>疑似请求内重建/重试</label><strong id="rebuildSuspectedCountValue">0</strong></div>
+            </div>
+            <h2 style="margin-top: 18px;">最近可疑样本</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>路径</th>
+                    <th>本地期望</th>
+                    <th>上游声明</th>
+                    <th>流式声明</th>
+                    <th>首个模型</th>
+                    <th>最后模型</th>
+                    <th>模型集合</th>
+                    <th>指纹集合</th>
+                    <th>异常类型</th>
+                    <th>可信度</th>
+                    <th>日志证据</th>
+                  </tr>
+                </thead>
+                <tbody id="suspiciousSamplesBody">
+                  <tr><td colspan="12">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="card wide-card" id="probeSection">
+          <div class="card-inner">
+            <h2>主动探针</h2>
+            <p class="risk-note">
+              主动探针只验证声明契约。warning 代表辅助异常，不代表硬违约；violation
+              也不代表已经识别出真实底层模型，transport_error 不计入违约。
+            </p>
+            <div class="stats">
+              <div class="stat"><label>主动探针状态</label><strong id="probeEnabledValue">-</strong></div>
+              <div class="stat"><label>最近目标模型</label><span id="probeTargetModelValue">-</span></div>
+              <div class="stat"><label>最近一次运行</label><span id="probeLastRunValue">-</span></div>
+              <div class="stat"><label>通过次数</label><strong id="probePassCountValue">0</strong></div>
+              <div class="stat"><label>warning 次数</label><strong id="probeWarningCountValue">0</strong></div>
+              <div class="stat"><label>违约次数</label><strong id="probeViolationCountValue">0</strong></div>
+              <div class="stat"><label>传输错误</label><strong id="probeTransportErrorCountValue">0</strong></div>
+              <div class="stat">
+                <div class="probe-control-card">
+                  <p class="probe-control-title">主动探针控制</p>
+                  <div class="probe-control-grid">
+                    <div class="probe-control-side">
+                      <div class="field">
+                        <label>探测目标模型</label>
+                        <div class="checkbox-group">
+                          <label class="checkbox-chip" for="probeTargetFamily54Input">
+                            <input id="probeTargetFamily54Input" type="checkbox" />
+                            <span>gpt-5.4</span>
+                          </label>
+                          <label class="checkbox-chip" for="probeTargetFamily55Input">
+                            <input id="probeTargetFamily55Input" type="checkbox" />
+                            <span>gpt-5.5</span>
+                          </label>
+                        </div>
+                      </div>
+                      <div class="inline-toggle">
+                        <input id="probeAutoEnabledInput" type="checkbox" />
+                        <label for="probeAutoEnabledInput">开启自动探测</label>
+                      </div>
+                    </div>
+                    <div class="probe-control-side actions-side">
+                      <div class="field compact-field">
+                        <label for="probeIntervalMinutesInput">探测频率（分钟）</label>
+                        <input id="probeIntervalMinutesInput" type="number" min="1" step="1" />
+                      </div>
+                      <div class="probe-control-action">
+                        <button class="primary" id="probeRunButton" type="button">现在探测一次</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <h2 style="margin-top: 18px;">最近主动探针样本</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>探针类型</th>
+                    <th>目标模型</th>
+                    <th>endpoint</th>
+                    <th>结果</th>
+                    <th>结果类型</th>
+                    <th>可信度</th>
+                    <th>状态码</th>
+                    <th>耗时</th>
+                    <th>上游模型</th>
+                    <th>指纹集合</th>
+                    <th>日志证据</th>
+                  </tr>
+                </thead>
+                <tbody id="probeSamplesBody">
+                  <tr><td colspan="12">暂无数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+    <button class="theme-toggle" id="themeToggleButton" type="button" aria-label="切换深浅色模式">
+      <span class="theme-toggle-icon" id="themeToggleIcon">☾</span>
+      <span id="themeToggleText">深色模式</span>
+    </button>
+
+    <script>
+      const ui = {"statusPath":"/__codex_retry_gateway/api/status","reasoningBehaviorPath":"/__codex_retry_gateway/api/analytics/reasoning","reasoningBehaviorExportPath":"/__codex_retry_gateway/api/analytics/reasoning/export","reasoningBackgroundExportMinDays":32,"historicalImportPath":"/__codex_retry_gateway/api/analytics/imports","configPath":"/__codex_retry_gateway/api/config","logsPath":"/__codex_retry_gateway/api/logs","restorePath":"/__codex_retry_gateway/api/restore"};
+      const refs = {
+        form: document.getElementById('configForm'),
+        reasoningInput: document.getElementById('reasoningInput'),
+        reasoningEqualsField: document.getElementById('reasoningEqualsField'),
+        reasoningEqualsHint: document.getElementById('reasoningEqualsHint'),
+        reasoningMatchModeSelect: document.getElementById('reasoningMatchModeSelect'),
+        interceptRuleModeReasoningTokensInput: document.getElementById('interceptRuleModeReasoningTokensInput'),
+        interceptRuleModeFinalOnlyInput: document.getElementById('interceptRuleModeFinalOnlyInput'),
+        interceptStreamingInput: document.getElementById('interceptStreamingInput'),
+        interceptNonStreamingInput: document.getElementById('interceptNonStreamingInput'),
+        interceptModeValue: document.getElementById('interceptModeValue'),
+        policySummaryValue: document.getElementById('policySummaryValue'),
+        streamActionStrict502Input: document.getElementById('streamActionStrict502Input'),
+        streamActionDisconnectInput: document.getElementById('streamActionDisconnectInput'),
+        streamActionContinuationRecoveryInput: document.getElementById('streamActionContinuationRecoveryInput'),
+        endpointsInput: document.getElementById('endpointsInput'),
+        statusCodeInput: document.getElementById('statusCodeInput'),
+        guardRetryAttemptsInput: document.getElementById('guardRetryAttemptsInput'),
+        retryUpstreamCapacityErrorsInput: document.getElementById('retryUpstreamCapacityErrorsInput'),
+        logMatchInput: document.getElementById('logMatchInput'),
+        probeTargetFamily54Input: document.getElementById('probeTargetFamily54Input'),
+        probeTargetFamily55Input: document.getElementById('probeTargetFamily55Input'),
+        probeAutoEnabledInput: document.getElementById('probeAutoEnabledInput'),
+        probeIntervalMinutesInput: document.getElementById('probeIntervalMinutesInput'),
+        saveButton: document.getElementById('saveButton'),
+        probeRunButton: document.getElementById('probeRunButton'),
+        restoreButton: document.getElementById('restoreButton'),
+        messageBox: document.getElementById('messageBox'),
+        listenValue: document.getElementById('listenValue'),
+        upstreamValue: document.getElementById('upstreamValue'),
+        providerValue: document.getElementById('providerValue'),
+        codexBaseUrlValue: document.getElementById('codexBaseUrlValue'),
+        configPathValue: document.getElementById('configPathValue'),
+        backupPathValue: document.getElementById('backupPathValue'),
+        startedAtValue: document.getElementById('startedAtValue'),
+        proxyRequestCountValue: document.getElementById('proxyRequestCountValue'),
+        inspectedCountValue: document.getElementById('inspectedCountValue'),
+        matchedCountValue: document.getElementById('matchedCountValue'),
+        blockedCountValue: document.getElementById('blockedCountValue'),
+        blockedRatioValue: document.getElementById('blockedRatioValue'),
+        matchedStreamingCountValue: document.getElementById('matchedStreamingCountValue'),
+        matchedNonStreamingCountValue: document.getElementById('matchedNonStreamingCountValue'),
+        blockedStreamingCountValue: document.getElementById('blockedStreamingCountValue'),
+        blockedNonStreamingCountValue: document.getElementById('blockedNonStreamingCountValue'),
+        continuationRecoveryCountValue: document.getElementById('continuationRecoveryCountValue'),
+        continuationRecoverySuccessRatioValue: document.getElementById('continuationRecoverySuccessRatioValue'),
+        modelMatchRatioValue: document.getElementById('modelMatchRatioValue'),
+        modelMismatchCountValue: document.getElementById('modelMismatchCountValue'),
+        lowContextFamilyCountValue: document.getElementById('lowContextFamilyCountValue'),
+        modelDriftCountValue: document.getElementById('modelDriftCountValue'),
+        fingerprintDriftCountValue: document.getElementById('fingerprintDriftCountValue'),
+        rebuildSuspectedCountValue: document.getElementById('rebuildSuspectedCountValue'),
+        probeEnabledValue: document.getElementById('probeEnabledValue'),
+        probeTargetModelValue: document.getElementById('probeTargetModelValue'),
+        probeLastRunValue: document.getElementById('probeLastRunValue'),
+        probePassCountValue: document.getElementById('probePassCountValue'),
+        probeWarningCountValue: document.getElementById('probeWarningCountValue'),
+        probeViolationCountValue: document.getElementById('probeViolationCountValue'),
+        probeTransportErrorCountValue: document.getElementById('probeTransportErrorCountValue'),
+        probeSamplesBody: document.getElementById('probeSamplesBody'),
+        suspiciousSamplesBody: document.getElementById('suspiciousSamplesBody'),
+        reasoningExportJsonButton: document.getElementById('reasoningExportJsonButton'),
+        reasoningExportCsvButton: document.getElementById('reasoningExportCsvButton'),
+        reasoningExportProgress: document.getElementById('reasoningExportProgress'),
+        reasoningExportProgressFill: document.getElementById('reasoningExportProgressFill'),
+        reasoningExportProgressText: document.getElementById('reasoningExportProgressText'),
+        reasoningExportDownloadLink: document.getElementById('reasoningExportDownloadLink'),
+        reasoningRangeTodayButton: document.getElementById('reasoningRangeTodayButton'),
+        reasoningRangeWeekButton: document.getElementById('reasoningRangeWeekButton'),
+        reasoningRangeApplyButton: document.getElementById('reasoningRangeApplyButton'),
+        reasoningDateFromInput: document.getElementById('reasoningDateFromInput'),
+        reasoningDateToInput: document.getElementById('reasoningDateToInput'),
+        reasoningTotalSamplesValue: document.getElementById('reasoningTotalSamplesValue'),
+        reasoningFinalOnlyRatioValue: document.getElementById('reasoningFinalOnlyRatioValue'),
+        reasoningCommentaryRatioValue: document.getElementById('reasoningCommentaryRatioValue'),
+        reasoningAvgDurationValue: document.getElementById('reasoningAvgDurationValue'),
+        reasoningAvgOutputTpsValue: document.getElementById('reasoningAvgOutputTpsValue'),
+        reasoningAvgAdjustedTpsValue: document.getElementById('reasoningAvgAdjustedTpsValue'),
+        reasoningExportMeta: document.getElementById('reasoningExportMeta'),
+        reasoningRangeChip: document.getElementById('reasoningRangeChip'),
+        reasoningTopTokensChart: document.getElementById('reasoningTopTokensChart'),
+        reasoningOutputTpsChart: document.getElementById('reasoningOutputTpsChart'),
+        reasoningByModelFamilyBody: document.getElementById('reasoningByModelFamilyBody'),
+        reasoningByEffortBody: document.getElementById('reasoningByEffortBody'),
+        reasoningByFamilyEffortBody: document.getElementById('reasoningByFamilyEffortBody'),
+        reasoningTokenTableLimitSelect: document.getElementById('reasoningTokenTableLimitSelect'),
+        reasoningCandidatePatternLimitSelect: document.getElementById('reasoningCandidatePatternLimitSelect'),
+        reasoningRecentSamplesLimitSelect: document.getElementById('reasoningRecentSamplesLimitSelect'),
+        reasoningByTokenBody: document.getElementById('reasoningByTokenBody'),
+        reasoningCandidatePatternsBody: document.getElementById('reasoningCandidatePatternsBody'),
+        reasoningRecentSamplesBody: document.getElementById('reasoningRecentSamplesBody'),
+        reasoningAnalysisModelFamilyInput: document.getElementById('reasoningAnalysisModelFamilyInput'),
+        reasoningAnalysisEffortInput: document.getElementById('reasoningAnalysisEffortInput'),
+        reasoningAnalysisTokenInput: document.getElementById('reasoningAnalysisTokenInput'),
+        reasoningAnalysisFinalOnlySelect: document.getElementById('reasoningAnalysisFinalOnlySelect'),
+        reasoningAnalysisCommentarySelect: document.getElementById('reasoningAnalysisCommentarySelect'),
+        reasoningAnalysisStatusSelect: document.getElementById('reasoningAnalysisStatusSelect'),
+        reasoningAnalysisIncludeRetriesInput: document.getElementById('reasoningAnalysisIncludeRetriesInput'),
+        reasoningAnalysisIncludeBlockedInput: document.getElementById('reasoningAnalysisIncludeBlockedInput'),
+        reasoningAnalyzeButton: document.getElementById('reasoningAnalyzeButton'),
+        reasoningAnalysisValue: document.getElementById('reasoningAnalysisValue'),
+        reasoningAnalysisConclusion: document.getElementById('reasoningAnalysisConclusion'),
+        reasoningAnalysisCoverageBody: document.getElementById('reasoningAnalysisCoverageBody'),
+        reasoningAnalysisCandidateSummaryValue: document.getElementById('reasoningAnalysisCandidateSummaryValue'),
+        reasoningAnalysisBaselineValue: document.getElementById('reasoningAnalysisBaselineValue'),
+        historicalImportRunButton: document.getElementById('historicalImportRunButton'),
+        historicalImportProgress: document.getElementById('historicalImportProgress'),
+        historicalImportProgressFill: document.getElementById('historicalImportProgressFill'),
+        historicalImportProgressText: document.getElementById('historicalImportProgressText'),
+        historicalImportSummaryValue: document.getElementById('historicalImportSummaryValue'),
+        historicalImportAnalysisValue: document.getElementById('historicalImportAnalysisValue'),
+        historicalImportAnalysisConclusion: document.getElementById('historicalImportAnalysisConclusion'),
+        historicalImportCoverageBody: document.getElementById('historicalImportCoverageBody'),
+        historicalImportCandidateSummaryValue: document.getElementById('historicalImportCandidateSummaryValue'),
+        historicalImportBaselineValue: document.getElementById('historicalImportBaselineValue'),
+        historicalImportSourcesBody: document.getElementById('historicalImportSourcesBody'),
+        historicalImportCcModelsBody: document.getElementById('historicalImportCcModelsBody'),
+        historicalImportCodexLogsBody: document.getElementById('historicalImportCodexLogsBody'),
+        historicalImportSessionsBody: document.getElementById('historicalImportSessionsBody'),
+        statsFootnote: document.getElementById('statsFootnote'),
+        logsMeta: document.getElementById('logsMeta'),
+        logsOutput: document.getElementById('logsOutput'),
+        themeToggleButton: document.getElementById('themeToggleButton'),
+        themeToggleIcon: document.getElementById('themeToggleIcon'),
+        themeToggleText: document.getElementById('themeToggleText'),
+      };
+      const themeStorageKey = 'codexRetryGatewayTheme';
+      let hasLoadedForm = false;
+      let lastLogSeq = 0;
+      let lastGatewayStartedAt = null;
+      let logsNeedFullReload = false;
+      let pollTimer = null;
+      let stoppedByRestore = false;
+      let reloadingForGatewayRestart = false;
+      let suspiciousSamplesSignature = '';
+      let probeSamplesSignature = '';
+      let reasoningBehaviorDateFrom = null;
+      let reasoningBehaviorDateTo = null;
+      let latestReasoningTokenRows = [];
+      let latestReasoningCandidatePatternRows = [];
+      let latestReasoningRecentSampleRows = [];
+      let reasoningExportPollTimer = null;
+      let historicalImportPollTimer = null;
+      const openSuspiciousEvidenceSampleKeys = new Set();
+      const openProbeEvidenceSampleKeys = new Set();
+
+      function applyTheme(theme) {
+        const nextTheme = theme === 'dark' ? 'dark' : 'light';
+        const themeRoot = document.documentElement || document.body;
+        if (themeRoot?.dataset) {
+          themeRoot.dataset.theme = nextTheme;
+        }
+        if (refs.themeToggleIcon) {
+          refs.themeToggleIcon.textContent = nextTheme === 'dark' ? '☀' : '☾';
+        }
+        if (refs.themeToggleText) {
+          refs.themeToggleText.textContent = nextTheme === 'dark' ? '浅色模式' : '深色模式';
+        }
+        if (refs.themeToggleButton) {
+          refs.themeToggleButton.setAttribute(
+            'aria-label',
+            nextTheme === 'dark' ? '切换到浅色模式' : '切换到深色模式',
+          );
+        }
+      }
+
+      function getStoredTheme() {
+        try {
+          return window.localStorage.getItem(themeStorageKey);
+        } catch {
+          return null;
+        }
+      }
+
+      function storeTheme(theme) {
+        try {
+          window.localStorage.setItem(themeStorageKey, theme);
+        } catch {
+          // 浏览器禁用本地存储时，当前页面仍可正常切换主题。
+        }
+      }
+
+      function toggleTheme() {
+        const themeRoot = document.documentElement || document.body;
+        const currentTheme = themeRoot?.dataset?.theme === 'dark' ? 'dark' : 'light';
+        const nextTheme = currentTheme === 'dark' ? 'light' : 'dark';
+        applyTheme(nextTheme);
+        storeTheme(nextTheme);
+      }
+
+      function buildProbeSampleKey(sample) {
+        return JSON.stringify({
+          scope: 'probe',
+          ts: sample?.ts || '',
+          probe_type: sample?.probe_type || '',
+          target_model: sample?.target_model || '',
+          endpoint_path: sample?.endpoint_path || '',
+          result: sample?.result || '',
+          result_type: sample?.result_type || '',
+        });
+      }
+
+      function setMessage(text, tone) {
+        refs.messageBox.textContent = text || '';
+        refs.messageBox.dataset.tone = tone || '';
+      }
+
+      function formatTimestamp(value) {
+        if (!value) {
+          return '-';
+        }
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+          return value;
+        }
+        return date.toLocaleString('zh-CN', { hour12: false });
+      }
+
+      function formatPercent(value) {
+        return Number.isFinite(value) ? (value * 100).toFixed(2) + '%' : '0.00%';
+      }
+
+      function formatNumber(value, digits) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) {
+          return '0';
+        }
+        if (Number.isInteger(digits)) {
+          return number.toFixed(digits);
+        }
+        return String(number);
+      }
+
+      function formatMs(value) {
+        const number = Number(value);
+        return Number.isFinite(number) ? number.toFixed(0) + ' ms' : '-';
+      }
+
+      function formatReasoningTokens(entries) {
+        const tokens = (Array.isArray(entries) ? entries : [])
+          .filter((entry) => Number(entry?.count || 0) > 1);
+        if (tokens.length === 0) {
+          return '无重复 token';
+        }
+        return tokens
+          .map((entry) => String(entry?.value ?? '-') + ' x' + String(entry?.count ?? 0))
+          .join('，');
+      }
+
+      function formatPathCounts(pathCounts) {
+        const entries = Object.entries(pathCounts || {})
+          .filter((entry) => Number(entry[1]) > 0)
+          .sort((left, right) => Number(right[1]) - Number(left[1]));
+        if (entries.length === 0) {
+          return '无';
+        }
+        const visibleEntries = entries.slice(0, 3);
+        const hiddenCount = entries.length - visibleEntries.length;
+        const visibleText = visibleEntries
+          .map((entry) => entry[0] + ' x' + String(entry[1]))
+          .join('，');
+        if (hiddenCount <= 0) {
+          return visibleText;
+        }
+        return visibleText + '，其余 ' + String(hiddenCount) + ' 项';
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
+
+      function toLocalDateInputValue(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return year + '-' + month + '-' + day;
+      }
+
+      function setReasoningBehaviorDateRange(dateFrom, dateTo) {
+        reasoningBehaviorDateFrom = dateFrom || null;
+        reasoningBehaviorDateTo = dateTo || null;
+        if (refs.reasoningDateFromInput) {
+          refs.reasoningDateFromInput.value = reasoningBehaviorDateFrom || '';
+        }
+        if (refs.reasoningDateToInput) {
+          refs.reasoningDateToInput.value = reasoningBehaviorDateTo || '';
+        }
+        if (refs.reasoningRangeChip) {
+          refs.reasoningRangeChip.textContent = formatReasoningBehaviorDateRangeLabel(
+            reasoningBehaviorDateFrom,
+            reasoningBehaviorDateTo,
+          );
+        }
+      }
+
+      function getReasoningBehaviorRequestUrl(baseUrl) {
+        const url = new URL(baseUrl || ui.reasoningBehaviorPath, window.location.origin);
+        if (reasoningBehaviorDateFrom) {
+          url.searchParams.set('date_from', reasoningBehaviorDateFrom);
+        }
+        if (reasoningBehaviorDateTo) {
+          url.searchParams.set('date_to', reasoningBehaviorDateTo);
+        }
+        return url;
+      }
+
+      function formatReasoningBehaviorDateRangeLabel(dateFrom, dateTo) {
+        if (dateFrom && dateTo) {
+          return '当前时间窗：' + dateFrom + ' 至 ' + dateTo;
+        }
+        if (dateFrom) {
+          return '当前时间窗：' + dateFrom + ' 起';
+        }
+        if (dateTo) {
+          return '当前时间窗：截至 ' + dateTo;
+        }
+        return '当前时间窗：默认最近窗口';
+      }
+
+      function buildReasoningBehaviorExportUrl(format) {
+        const url = getReasoningBehaviorRequestUrl(ui.reasoningBehaviorExportPath);
+        url.searchParams.set('format', format);
+        return url.toString();
+      }
+
+      function countReasoningDateRangeDays(dateFrom, dateTo) {
+        if (!dateFrom || !dateTo) {
+          return null;
+        }
+        const fromMs = Date.parse(dateFrom + 'T00:00:00.000Z');
+        const toMs = Date.parse(dateTo + 'T00:00:00.000Z');
+        if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs < fromMs) {
+          return null;
+        }
+        return Math.floor((toMs - fromMs) / 86400000) + 1;
+      }
+
+      function shouldUseBackgroundReasoningExport() {
+        const rangeDays = countReasoningDateRangeDays(
+          reasoningBehaviorDateFrom,
+          reasoningBehaviorDateTo,
+        );
+        return (
+          rangeDays !== null &&
+          rangeDays >= Number(ui.reasoningBackgroundExportMinDays || 32)
+        );
+      }
+
+      function setReasoningExportProgress(job, message) {
+        if (!refs.reasoningExportProgress) {
+          return;
+        }
+        refs.reasoningExportProgress.hidden = false;
+        const percent = Math.max(0, Math.min(1, Number(job?.progress?.percent || 0)));
+        if (refs.reasoningExportProgressFill) {
+          refs.reasoningExportProgressFill.style.width = String(Math.round(percent * 100)) + '%';
+        }
+        if (refs.reasoningExportProgressText) {
+          const processed = Number(job?.progress?.processed_days || 0);
+          const total = Number(job?.progress?.total_days || 0);
+          const status = job?.status || 'queued';
+          refs.reasoningExportProgressText.textContent =
+            message ||
+            '后台导出 ' + status + '：已处理 ' + String(processed) + ' / ' + String(total) + ' 天，可以继续正常使用 gateway。';
+        }
+        if (refs.reasoningExportDownloadLink) {
+          const downloadUrl = job?.download_url || '';
+          refs.reasoningExportDownloadLink.hidden = !downloadUrl;
+          refs.reasoningExportDownloadLink.href = downloadUrl || '#';
+        }
+      }
+
+      async function pollReasoningExportJob(jobId) {
+        if (!jobId) {
+          return;
+        }
+        const url = ui.reasoningBehaviorExportPath + '/jobs/' + encodeURIComponent(jobId);
+        const response = await fetch(url, { cache: 'no-store' });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error?.message || '后台导出任务状态查询失败');
+        }
+        const job = payload?.export_job;
+        setReasoningExportProgress(job);
+        if (job?.status === 'completed') {
+          setReasoningExportProgress(job, '后台导出完成，可以下载文件。');
+          return;
+        }
+        if (job?.status === 'failed') {
+          setReasoningExportProgress(job, '后台导出失败：' + String(job?.error_message || '未知错误'));
+          return;
+        }
+        reasoningExportPollTimer = window.setTimeout(() => {
+          pollReasoningExportJob(jobId).catch((error) => setMessage(error?.message || String(error), 'error'));
+        }, 800);
+      }
+
+      async function openReasoningBehaviorExport(format) {
+        const url = buildReasoningBehaviorExportUrl(format);
+        if (reasoningExportPollTimer) {
+          window.clearTimeout(reasoningExportPollTimer);
+          reasoningExportPollTimer = null;
+        }
+        if (!shouldUseBackgroundReasoningExport()) {
+          if (refs.reasoningExportProgress) {
+            refs.reasoningExportProgress.hidden = true;
+          }
+          if (typeof window.open === 'function') {
+            window.open(url, '_blank');
+          } else {
+            window.location.href = url;
+          }
+          return;
+        }
+        setReasoningExportProgress(
+          { status: 'queued', progress: { processed_days: 0, total_days: 0, percent: 0 } },
+          '正在创建后台导出任务，可以继续正常使用 gateway。',
+        );
+        const response = await fetch(url, { cache: 'no-store' });
+        const contentType = response.headers?.get?.('content-type') || '';
+        if (response.status === 202 || contentType.includes('application/json')) {
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload?.error?.message || '导出失败');
+          }
+          if (payload?.export_job?.job_id) {
+            setReasoningExportProgress(payload.export_job, payload.message);
+            await pollReasoningExportJob(payload.export_job.job_id);
+            return;
+          }
+        }
+      }
+
+      function buildSampleKey(sample) {
+        return JSON.stringify({
+          ts: sample?.ts || '',
+          path: sample?.path || '',
+          local: sample?.effective_local_model || '',
+          first: sample?.first_observed_model || '',
+          last: sample?.last_observed_model || '',
+          anomaly: sample?.anomaly_type || '',
+          confidence: sample?.confidence || '',
+        });
+      }
+
+      function parseReasoningInput() {
+        return refs.reasoningInput.value
+          .split(/[\s,]+/)
+          .map((value) => value.trim())
+          .filter(Boolean)
+          .map((value) => Number.parseInt(value, 10))
+          .filter((value) => Number.isInteger(value));
+      }
+
+      function parseEndpointsInput() {
+        return refs.endpointsInput.value
+          .split(/\r?\n/)
+          .map((value) => value.trim())
+          .filter(Boolean);
+      }
+
+      function describeInterceptMode(interceptStreaming, interceptNonStreaming) {
+        if (interceptStreaming && interceptNonStreaming) {
+          return '流式+非流式';
+        }
+        if (interceptStreaming) {
+          return '仅流式';
+        }
+        if (interceptNonStreaming) {
+          return '仅非流式';
+        }
+        return '未选择';
+      }
+
+      function syncInterceptModeValueFromForm() {
+        refs.interceptModeValue.textContent = describeInterceptMode(
+          refs.interceptStreamingInput.checked,
+          refs.interceptNonStreamingInput.checked,
+        );
+      }
+
+      function describeRuleTargetFromForm() {
+        if (refs.interceptRuleModeFinalOnlyInput.checked) {
+          return 'final answer only（high/xhigh，排除普通 0）';
+        }
+        if (refs.reasoningMatchModeSelect.value === 'formula_518n_minus_2') {
+          return 'reasoning_tokens 命中 518*n - 2 规则';
+        }
+        try {
+          const values = parseReasoningInput();
+          return 'reasoning_tokens 命中 ' + values.join(' / ');
+        } catch {
+          return 'reasoning_tokens 命中当前输入值';
+        }
+      }
+
+      function syncReasoningMatchModeFromForm() {
+        const formulaMode = refs.reasoningMatchModeSelect.value === 'formula_518n_minus_2';
+        refs.reasoningInput.disabled = formulaMode;
+        refs.reasoningEqualsField.classList.toggle('is-formula-locked', formulaMode);
+        refs.reasoningEqualsHint.textContent = formulaMode
+          ? '公式模式已接管命中条件：这里仅保留为回退/参考列表，不能直接编辑。'
+          : '手动模式下多个值用英文逗号或空格分隔；选择 518*n - 2 规则时，这里只保留为回退/参考列表。';
+      }
+
+      function describeStreamActionFromForm() {
+        const attempts = Number.parseInt(refs.guardRetryAttemptsInput.value, 10);
+        const safeAttempts = Number.isFinite(attempts) && attempts >= 0 ? attempts : 0;
+        const statusCode = Number.parseInt(refs.statusCodeInput.value, 10) || 502;
+        if (refs.streamActionContinuationRecoveryInput.checked) {
+          return 'Responses 流式先续写恢复；最大内部尝试 ' + safeAttempts + ' 次，失败或仍命中返回 ' + statusCode;
+        }
+        if (refs.streamActionDisconnectInput.checked) {
+          return '兼容旧行为：已透传时断开连接；未透传时最大内部尝试 ' + safeAttempts + ' 次，仍命中返回 ' + statusCode;
+        }
+        return '网关内重试；最大内部尝试 ' + safeAttempts + ' 次，仍命中返回 ' + statusCode;
+      }
+
+      function syncPolicySummaryFromForm() {
+        refs.policySummaryValue.textContent =
+          describeRuleTargetFromForm() + ' -> ' + describeStreamActionFromForm();
+      }
+
+      function getInterceptRuleModeFromForm() {
+        if (refs.interceptRuleModeFinalOnlyInput.checked) {
+          return 'final_answer_only_high_xhigh';
+        }
+        return 'reasoning_tokens';
+      }
+
+      function getStreamActionFromForm() {
+        if (refs.streamActionContinuationRecoveryInput.checked) {
+          return 'continuation_recovery';
+        }
+        if (refs.streamActionDisconnectInput.checked) {
+          return 'disconnect';
+        }
+        return 'strict_502';
+      }
+
+      function collectInterceptPayloadFromForm() {
+        const interceptStreaming = Boolean(refs.interceptStreamingInput.checked);
+        const interceptNonStreaming = Boolean(refs.interceptNonStreamingInput.checked);
+        if (!interceptStreaming && !interceptNonStreaming) {
+          throw new Error('流式与非流式至少选择一个拦截目标。');
+        }
+        return {
+          intercept_rule_mode: getInterceptRuleModeFromForm(),
+          intercept_streaming: interceptStreaming,
+          intercept_non_streaming: interceptNonStreaming,
+          stream_action: getStreamActionFromForm(),
+        };
+      }
+
+      function collectActiveProbeFormPayload() {
+        const targetFamilies = [];
+        if (refs.probeTargetFamily54Input.checked) {
+          targetFamilies.push('gpt-5.4');
+        }
+        if (refs.probeTargetFamily55Input.checked) {
+          targetFamilies.push('gpt-5.5');
+        }
+        const intervalMinutes = Number.parseInt(refs.probeIntervalMinutesInput.value, 10);
+        const safeMinutes = Number.isInteger(intervalMinutes) && intervalMinutes > 0 ? intervalMinutes : 15;
+        return {
+          enabled: refs.probeAutoEnabledInput.checked,
+          interval_ms: safeMinutes * 60 * 1000,
+          target_families: targetFamilies,
+        };
+      }
+
+      function setProbeEnabledValue(enabled) {
+        refs.probeEnabledValue.textContent = enabled ? '已开启' : '未开启';
+      }
+
+      function syncProbeEnabledValueFromForm() {
+        setProbeEnabledValue(Boolean(refs.probeAutoEnabledInput.checked));
+      }
+
+      function hasSelectedProbeTargetFamilies() {
+        return refs.probeTargetFamily54Input.checked || refs.probeTargetFamily55Input.checked;
+      }
+
+      async function persistActiveProbeConfigFromControls() {
+        const activeProbePayload = collectActiveProbeFormPayload();
+        if (activeProbePayload.enabled && activeProbePayload.target_families.length === 0) {
+          throw new Error('开启自动探测前，至少选择一个探测目标模型。');
+        }
+        const response = await fetch(ui.configPath, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            active_probe: activeProbePayload,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error?.message || '保存主动探针配置失败');
+        }
+        fillStatus(payload, { preferFormEnabled: false });
+        fillForm(payload.config || {});
+        hasLoadedForm = true;
+        await loadLogs(false);
+        return payload;
+      }
+
+      function fillStatus(payload, options) {
+        refs.listenValue.textContent = payload.listen || '-';
+        refs.upstreamValue.textContent = payload.config?.upstream_base_url || '-';
+        refs.providerValue.textContent = payload.state?.provider_name || '未检测到安装状态';
+        refs.codexBaseUrlValue.textContent = payload.state?.codex_current_base_url || '-';
+        refs.configPathValue.textContent = payload.paths?.config_path || '-';
+        refs.backupPathValue.textContent = payload.state?.latest_backup_path || '-';
+        fillMetrics(payload.metrics || {});
+        fillModelInsights(payload.model_insights || {});
+        fillActiveProbe(payload.active_probe || {}, options);
+      }
+
+      function fillMetrics(metrics) {
+        const totalProxyRequestCount = Number(metrics.total_proxy_request_count ?? 0);
+        const inspectedResponseCount = Number(metrics.inspected_response_count ?? 0);
+        const bypassedProxyRequestCount = Number(metrics.bypassed_proxy_request_count ?? 0);
+        const failedProxyRequestCount = Number(metrics.failed_proxy_request_count ?? 0);
+        const activeProxyRequestCount = Number(metrics.active_proxy_request_count ?? 0);
+        refs.startedAtValue.textContent = formatTimestamp(metrics.started_at);
+        refs.proxyRequestCountValue.textContent = String(totalProxyRequestCount);
+        refs.inspectedCountValue.textContent = String(inspectedResponseCount);
+        refs.matchedCountValue.textContent = String(metrics.matched_response_count ?? 0);
+        refs.blockedCountValue.textContent = String(metrics.blocked_response_count ?? 0);
+        refs.blockedRatioValue.textContent = formatPercent(
+          inspectedResponseCount === 0 ? 0 : Number(metrics.blocked_response_count ?? 0) / inspectedResponseCount,
+        );
+        refs.matchedStreamingCountValue.textContent = String(metrics.matched_streaming_count ?? 0);
+        refs.matchedNonStreamingCountValue.textContent = String(metrics.matched_non_streaming_count ?? 0);
+        refs.blockedStreamingCountValue.textContent = String(metrics.blocked_streaming_count ?? 0);
+        refs.blockedNonStreamingCountValue.textContent = String(metrics.blocked_non_streaming_count ?? 0);
+        refs.continuationRecoveryCountValue.textContent = String(metrics.continuation_recovery_count ?? 0);
+        refs.continuationRecoverySuccessRatioValue.textContent = formatPercent(
+          Number(metrics.continuation_recovery_success_ratio ?? 0),
+        );
+        const statsDifference = Math.max(0, totalProxyRequestCount - inspectedResponseCount);
+        const footnoteParts = [
+          '如果“当前 Codex Base URL”已经是本机监听地址，就说明当前 Codex 已经被这个 gateway 接管。统计口径按本次 gateway 启动以来累计。',
+          '代理请求总数 = 被检查响应总数 + 未纳入检查的透传请求 + 失败请求 + 进行中的代理请求。',
+        ];
+        if (
+          statsDifference > 0 ||
+          bypassedProxyRequestCount > 0 ||
+          failedProxyRequestCount > 0 ||
+          activeProxyRequestCount > 0
+        ) {
+          footnoteParts.push(
+            '当前差值 ' +
+              String(statsDifference) +
+              '，其中未纳入检查的透传请求 ' +
+              String(bypassedProxyRequestCount) +
+              '（' +
+              formatPathCounts(metrics.bypassed_proxy_path_counts) +
+              '），失败请求 ' +
+              String(failedProxyRequestCount) +
+              '，进行中的代理请求 ' +
+              String(activeProxyRequestCount) +
+              '（' +
+              formatPathCounts(metrics.active_proxy_path_counts) +
+              '）' +
+              '。',
+          );
+        }
+        refs.statsFootnote.textContent = footnoteParts.join(' ');
+      }
+
+      function fillForm(config) {
+        refs.reasoningInput.value = Array.isArray(config?.reasoning_equals) ? config.reasoning_equals.join(', ') : '';
+        refs.reasoningMatchModeSelect.value = config?.reasoning_match_mode === 'formula_518n_minus_2'
+          ? 'formula_518n_minus_2'
+          : 'manual';
+        const interceptRuleMode = config?.intercept_rule_mode === 'final_answer_only_high_xhigh'
+            ? 'final_answer_only_high_xhigh'
+            : 'reasoning_tokens';
+        refs.interceptRuleModeFinalOnlyInput.checked = interceptRuleMode === 'final_answer_only_high_xhigh';
+        refs.interceptRuleModeReasoningTokensInput.checked = interceptRuleMode === 'reasoning_tokens';
+        const streamAction = config?.stream_action === 'continuation_recovery'
+          ? 'continuation_recovery'
+          : config?.stream_action === 'disconnect'
+            ? 'disconnect'
+            : 'strict_502';
+        refs.streamActionContinuationRecoveryInput.checked = streamAction === 'continuation_recovery';
+        refs.streamActionDisconnectInput.checked = streamAction === 'disconnect';
+        refs.streamActionStrict502Input.checked = streamAction === 'strict_502';
+        refs.interceptStreamingInput.checked = config?.intercept_streaming !== false;
+        refs.interceptNonStreamingInput.checked = config?.intercept_non_streaming !== false;
+        syncInterceptModeValueFromForm();
+        refs.endpointsInput.value = Array.isArray(config?.endpoints) ? config.endpoints.join('\n') : '';
+        refs.statusCodeInput.value = config?.non_stream_status_code ?? 502;
+        refs.guardRetryAttemptsInput.value = String(config?.guard_retry_attempts ?? 5);
+        syncReasoningMatchModeFromForm();
+        syncPolicySummaryFromForm();
+        refs.retryUpstreamCapacityErrorsInput.checked = config?.retry_upstream_capacity_errors !== false;
+        refs.logMatchInput.checked = Boolean(config?.log_match);
+        const activeProbe = config?.active_probe || {};
+        const targetFamilies = Array.isArray(activeProbe?.target_families) ? activeProbe.target_families : [];
+        refs.probeTargetFamily54Input.checked = targetFamilies.includes('gpt-5.4');
+        refs.probeTargetFamily55Input.checked = targetFamilies.includes('gpt-5.5');
+        refs.probeAutoEnabledInput.checked = Boolean(activeProbe?.enabled);
+        const intervalMs = Number(activeProbe?.interval_ms ?? 15 * 60 * 1000);
+        refs.probeIntervalMinutesInput.value = String(
+          Math.max(1, Math.round(intervalMs / 60000) || 15),
+        );
+        syncProbeEnabledValueFromForm();
+      }
+
+      function renderEvidenceLogs(evidenceLogs, sampleKey, isOpen) {
+        const entries = Array.isArray(evidenceLogs) ? evidenceLogs : [];
+        if (entries.length === 0) {
+          return '-';
+        }
+        const lines = entries
+          .map((entry) => {
+            const prefix = entry?.seq ? '#' + entry.seq + ' ' : '';
+            const at = entry?.at ? formatTimestamp(entry.at) : '-';
+            const message = entry?.message ? entry.message : '';
+            return prefix + at + ' ' + message;
+          })
+          .join('\n');
+        return '<details class="evidence-details" data-sample-key="' +
+          escapeHtml(sampleKey) +
+          '"' +
+          (isOpen ? ' open' : '') +
+          '><summary>查看 ' +
+          String(entries.length) +
+          ' 条</summary><pre class="evidence-log-output">' +
+          escapeHtml(lines) +
+          '</pre></details>';
+      }
+
+      function collectOpenEvidenceSampleKeys(container) {
+        const keys = new Set();
+        if (!container || typeof container.querySelectorAll !== 'function') {
+          return keys;
+        }
+        const nodes = container.querySelectorAll('.evidence-details[data-sample-key][open]');
+        for (const node of nodes) {
+          const sampleKey = typeof node?.getAttribute === 'function'
+            ? node.getAttribute('data-sample-key')
+            : null;
+          if (sampleKey) {
+            keys.add(sampleKey);
+          }
+        }
+        return keys;
+      }
+
+      function rememberEvidenceSummaryIntent(event, openKeySet) {
+        const summary = event?.target && typeof event.target.closest === 'function'
+          ? event.target.closest('summary')
+          : null;
+        if (!summary) {
+          return;
+        }
+        const details = summary.parentElement;
+        if (!details || details.tagName !== 'DETAILS' || !details.classList.contains('evidence-details')) {
+          return;
+        }
+        const sampleKey = typeof details.getAttribute === 'function'
+          ? details.getAttribute('data-sample-key')
+          : null;
+        if (!sampleKey) {
+          return;
+        }
+        if (details.open) {
+          openKeySet.delete(sampleKey);
+        } else {
+          openKeySet.add(sampleKey);
+        }
+      }
+
+      function renderSuspiciousSamples(samples) {
+        const rows = Array.isArray(samples) ? samples : [];
+        const signature = JSON.stringify(rows);
+        if (signature === suspiciousSamplesSignature) {
+          return;
+        }
+        const openKeysFromDom = collectOpenEvidenceSampleKeys(refs.suspiciousSamplesBody);
+        openKeysFromDom.forEach((key) => {
+          openSuspiciousEvidenceSampleKeys.add(key);
+        });
+
+        const validKeys = new Set(rows.map((sample) => buildSampleKey(sample)));
+        openSuspiciousEvidenceSampleKeys.forEach((key) => {
+          if (!validKeys.has(key)) {
+            openSuspiciousEvidenceSampleKeys.delete(key);
+          }
+        });
+
+        if (rows.length === 0) {
+          refs.suspiciousSamplesBody.innerHTML = '<tr><td colspan="12">暂无数据</td></tr>';
+          suspiciousSamplesSignature = signature;
+          return;
+        }
+        refs.suspiciousSamplesBody.innerHTML = rows
+          .map((sample) => {
+            const sampleKey = buildSampleKey(sample);
+            return '<tr>' +
+            '<td>' + formatTimestamp(sample.ts) + '</td>' +
+            '<td>' + (sample.path || '-') + '</td>' +
+            '<td>' + (sample.effective_local_model || '-') + '</td>' +
+            '<td>' + (sample.upstream_model || '-') + '</td>' +
+            '<td>' + (sample.stream_model || '-') + '</td>' +
+            '<td>' + (sample.first_observed_model || '-') + '</td>' +
+            '<td>' + (sample.last_observed_model || '-') + '</td>' +
+            '<td>' + ((sample.observed_models || []).join(', ') || '-') + '</td>' +
+            '<td>' + ((sample.observed_fingerprints || []).join(', ') || '-') + '</td>' +
+            '<td>' + (sample.anomaly_type || '-') + '</td>' +
+            '<td>' + (sample.confidence || '-') + '</td>' +
+            '<td>' + renderEvidenceLogs(sample.evidence_logs, sampleKey, openSuspiciousEvidenceSampleKeys.has(sampleKey)) + '</td>' +
+          '</tr>';
+          })
+          .join('');
+        suspiciousSamplesSignature = signature;
+      }
+
+      function renderProbeSamples(samples) {
+        const rows = Array.isArray(samples) ? samples : [];
+        const signature = JSON.stringify(rows);
+        if (signature === probeSamplesSignature) {
+          return;
+        }
+        const openKeysFromDom = collectOpenEvidenceSampleKeys(refs.probeSamplesBody);
+        openKeysFromDom.forEach((key) => {
+          openProbeEvidenceSampleKeys.add(key);
+        });
+        const validKeys = new Set(rows.map((sample) => buildProbeSampleKey(sample)));
+        openProbeEvidenceSampleKeys.forEach((key) => {
+          if (!validKeys.has(key)) {
+            openProbeEvidenceSampleKeys.delete(key);
+          }
+        });
+        if (rows.length === 0) {
+          refs.probeSamplesBody.innerHTML = '<tr><td colspan="12">暂无数据</td></tr>';
+          probeSamplesSignature = signature;
+          return;
+        }
+        refs.probeSamplesBody.innerHTML = rows
+          .map((sample) => {
+            const sampleKey = buildProbeSampleKey(sample);
+            return '<tr>' +
+              '<td>' + formatTimestamp(sample.ts) + '</td>' +
+              '<td>' + (sample.probe_type || '-') + '</td>' +
+              '<td>' + (sample.target_model || '-') + '</td>' +
+              '<td>' + (sample.endpoint_path || '-') + '</td>' +
+              '<td>' + (sample.result || '-') + '</td>' +
+              '<td>' + (sample.result_type || '-') + '</td>' +
+              '<td>' + (sample.confidence || '-') + '</td>' +
+              '<td>' + (sample.http_status ?? '-') + '</td>' +
+              '<td>' + ((sample.duration_ms ?? '-') + ' ms') + '</td>' +
+              '<td>' + (sample.upstream_model || '-') + '</td>' +
+              '<td>' + ((sample.observed_fingerprints || []).join(', ') || '-') + '</td>' +
+              '<td>' + renderEvidenceLogs(sample.evidence_logs, sampleKey, openProbeEvidenceSampleKeys.has(sampleKey)) + '</td>' +
+            '</tr>';
+          })
+          .join('');
+        probeSamplesSignature = signature;
+      }
+
+      function renderReasoningBars(container, rows, options) {
+        if (!container) {
+          return;
+        }
+        const entries = Array.isArray(rows) ? rows : [];
+        if (entries.length === 0) {
+          container.innerHTML = options?.emptyText || '暂无数据';
+          return;
+        }
+        const maxCount = Math.max(1, ...entries.map((entry) => Number(entry?.count || 0)));
+        container.innerHTML = entries
+          .map((entry) => {
+            const count = Number(entry?.count || 0);
+            const width = Math.max(3, Math.round((count / maxCount) * 100));
+            const label = options?.label
+              ? options.label(entry)
+              : String(entry?.label ?? entry?.value ?? '-');
+            return '<div class="signal-bar">' +
+              '<span>' + escapeHtml(label) + '</span>' +
+              '<span class="signal-bar-track"><span class="signal-bar-fill" style="width: ' + String(width) + '%"></span></span>' +
+              '<strong>' + String(count) + '</strong>' +
+            '</div>';
+          })
+          .join('');
+      }
+
+      function renderReasoningGroupedTable(container, rows, options) {
+        const entries = Array.isArray(rows) ? rows : [];
+        if (!container) {
+          return;
+        }
+        if (entries.length === 0) {
+          container.innerHTML = '<tr><td colspan="8">暂无数据</td></tr>';
+          return;
+        }
+        container.innerHTML = entries
+          .map((entry) => {
+            const label = options?.label ? options.label(entry) : '-';
+            const avgTps = options?.adjusted
+              ? entry.avg_reasoning_adjusted_tps
+              : entry.avg_output_tps;
+            return '<tr>' +
+              '<td>' + escapeHtml(label) + '</td>' +
+              '<td>' + String(entry.count ?? 0) + '</td>' +
+              '<td>' + formatPercent(Number(entry.ratio ?? 0)) + '</td>' +
+              '<td>' + formatPercent(Number(entry.final_answer_only_ratio ?? 0)) + '</td>' +
+              '<td>' + formatPercent(Number(entry.commentary_observed_ratio ?? entry.commentary_present_ratio ?? 0)) + '</td>' +
+              '<td>' + formatMs(entry.avg_duration_total_ms) + '</td>' +
+              '<td>' + formatNumber(avgTps, 2) + '</td>' +
+              '<td>' + escapeHtml(formatReasoningTokens(entry.top_reasoning_tokens)) + '</td>' +
+            '</tr>';
+          })
+          .join('');
+      }
+
+      function renderReasoningTokenTable(rows) {
+        const entries = Array.isArray(rows) ? rows : [];
+        latestReasoningTokenRows = entries;
+        if (entries.length === 0) {
+          refs.reasoningByTokenBody.innerHTML = '<tr><td colspan="8">暂无数据</td></tr>';
+          return;
+        }
+        const limit = Number.parseInt(refs.reasoningTokenTableLimitSelect?.value || '10', 10) || 10;
+        refs.reasoningByTokenBody.innerHTML = entries.slice(0, limit)
+          .map((entry) => '<tr>' +
+            '<td>' + escapeHtml(entry.value ?? '-') + '</td>' +
+            '<td>' + String(entry.count ?? 0) + '</td>' +
+            '<td>' + formatPercent(Number(entry.final_answer_only_ratio ?? 0)) + '</td>' +
+            '<td>' + formatPercent(Number(entry.commentary_observed_ratio ?? entry.commentary_present_ratio ?? 0)) + '</td>' +
+            '<td>' + formatMs(entry.avg_duration_total_ms) + '</td>' +
+            '<td>' + formatNumber(entry.avg_output_tps, 2) + '</td>' +
+            '<td>' + formatNumber(entry.avg_time_normalization_deviation, 3) + '</td>' +
+            '<td>' + formatTimestamp(entry.last_seen_at) + '</td>' +
+          '</tr>')
+          .join('');
+      }
+
+      function renderReasoningCandidatePatterns(rows) {
+        const entries = Array.isArray(rows) ? rows : [];
+        latestReasoningCandidatePatternRows = entries;
+        if (entries.length === 0) {
+          refs.reasoningCandidatePatternsBody.innerHTML = '<tr><td colspan="8">暂无数据</td></tr>';
+          return;
+        }
+        const limit = Number.parseInt(refs.reasoningCandidatePatternLimitSelect?.value || '10', 10) || 10;
+        refs.reasoningCandidatePatternsBody.innerHTML = entries.slice(0, limit)
+          .map((entry) => '<tr>' +
+            '<td>' + escapeHtml(entry.pattern_key || '-') + '</td>' +
+            '<td>' + String(entry.count ?? 0) + '</td>' +
+            '<td>' + formatPercent(Number(entry.ratio ?? 0)) + '</td>' +
+            '<td>' + formatMs(entry.avg_duration_total_ms) + '</td>' +
+            '<td>' + formatNumber(entry.avg_output_tps, 2) + '</td>' +
+            '<td>' + formatNumber(entry.avg_time_normalization_deviation, 3) + '</td>' +
+            '<td>' + formatTimestamp(entry.last_seen_at) + '</td>' +
+            '<td>' + escapeHtml(entry.status || 'observe_only') + '</td>' +
+          '</tr>')
+          .join('');
+      }
+
+      function renderReasoningRecentSamples(rows) {
+        const entries = Array.isArray(rows) ? rows : [];
+        latestReasoningRecentSampleRows = entries;
+        if (entries.length === 0) {
+          refs.reasoningRecentSamplesBody.innerHTML = '<tr><td colspan="13">暂无数据</td></tr>';
+          return;
+        }
+        const limit = Number.parseInt(refs.reasoningRecentSamplesLimitSelect?.value || '10', 10) || 10;
+        refs.reasoningRecentSamplesBody.innerHTML = entries.slice(0, limit)
+          .map((sample) => {
+            const hitText = (sample.matched_current_rule ? '命中' : '未命中') +
+              ' / ' +
+              (sample.blocked_by_gateway ? '拦截' : '未拦截');
+            return '<tr>' +
+              '<td>' + formatTimestamp(sample.ts) + '</td>' +
+              '<td>' + escapeHtml(sample.path || '-') + '</td>' +
+              '<td>' + escapeHtml(sample.request_model || sample.effective_local_model || '-') + '</td>' +
+              '<td>' + escapeHtml(sample.effective_local_model_family || sample.request_model_family || '-') + '</td>' +
+              '<td>' + escapeHtml(sample.request_reasoning_effort || '-') + '</td>' +
+              '<td>' + escapeHtml(sample.reasoning_tokens ?? '-') + '</td>' +
+              '<td>' + escapeHtml(sample.output_tokens ?? '-') + '</td>' +
+              '<td>' + formatMs(sample.duration_total_ms) + '</td>' +
+              '<td>' + formatNumber(sample.output_tps, 2) + '</td>' +
+              '<td>' + (sample.final_answer_only ? '是' : '否') + '</td>' +
+              '<td>' + ((sample.commentary_observed ?? sample.has_commentary) ? '是' : '否') + '</td>' +
+              '<td>' + hitText + '</td>' +
+              '<td>' + escapeHtml(String(sample.client_http_status ?? '-') + ' / ' + String(sample.final_action || '-')) + '</td>' +
+            '</tr>';
+          })
+          .join('');
+      }
+
+      function parseCsvText(value) {
+        return String(value || '')
+          .split(/[,\s]+/)
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+      }
+
+      function parseNumberCsvText(value) {
+        return parseCsvText(value)
+          .map((entry) => Number.parseInt(entry, 10))
+          .filter((entry) => Number.isInteger(entry));
+      }
+
+      function renderFeatureCoverage(container, coverage) {
+        const entries = Object.entries(coverage || {});
+        if (!container) {
+          return;
+        }
+        if (entries.length === 0) {
+          container.innerHTML = '<tr><td colspan="2">暂无 field_coverage</td></tr>';
+          return;
+        }
+        container.innerHTML = entries
+          .map(([field, ratio]) => '<tr>' +
+            '<td>' + escapeHtml(field) + '</td>' +
+            '<td>' + formatPercent(Number(ratio || 0)) + '</td>' +
+          '</tr>')
+          .join('');
+      }
+
+      function fillFeatureAnalysis(payload, target) {
+        const analysisValue = payload?.analysis_value || '-';
+        const conclusion = payload?.conclusion || '-';
+        const candidate = payload?.candidate_summary || {};
+        const baseline = payload?.baseline_comparison || {};
+        const valueText = analysisValue === 'no_analysis_value'
+          ? 'no_analysis_value（无分析价值）'
+          : analysisValue;
+        target.value.textContent = valueText;
+        target.conclusion.textContent = conclusion;
+        target.candidate.textContent =
+          '候选 ' + String(candidate.candidate_count ?? 0) +
+          '，占比 ' + formatPercent(Number(candidate.candidate_ratio ?? 0)) +
+          '，516 ' + String(candidate.reasoning_516_count ?? 0);
+        target.baseline.textContent =
+          'baseline ' + String(baseline.baseline_count ?? 0) +
+          '，候选时序偏差 ' + formatNumber(baseline.candidate_avg_time_normalization_deviation, 3) +
+          ' / 基线 ' + formatNumber(baseline.baseline_avg_time_normalization_deviation, 3);
+        renderFeatureCoverage(target.coverage, payload?.field_coverage || {});
+      }
+
+      function fillReasoningFeatureAnalysis(payload) {
+        fillFeatureAnalysis(payload, {
+          value: refs.reasoningAnalysisValue,
+          conclusion: refs.reasoningAnalysisConclusion,
+          coverage: refs.reasoningAnalysisCoverageBody,
+          candidate: refs.reasoningAnalysisCandidateSummaryValue,
+          baseline: refs.reasoningAnalysisBaselineValue,
+        });
+      }
+
+      function buildHistoricalAnalysisFromPreflight(preflight) {
+        const analysisValue = preflight?.analysis_value || 'no_analysis_value';
+        return {
+          analysis_profile: '516_candidate_review_v1',
+          analysis_value: analysisValue,
+          conclusion:
+            analysisValue === 'valuable'
+              ? 'not_observed'
+              : analysisValue === 'partial'
+                ? 'insufficient_fields'
+                : 'no_analysis_value',
+          field_coverage: preflight?.field_coverage || {},
+          candidate_summary: { candidate_count: 0, candidate_ratio: 0 },
+          baseline_comparison: { baseline_count: 0 },
+        };
+      }
+
+      function fillHistoricalFeatureAnalysis(job) {
+        const payload = job?.feature_analysis || buildHistoricalAnalysisFromPreflight(job?.preflight);
+        fillFeatureAnalysis(payload, {
+          value: refs.historicalImportAnalysisValue,
+          conclusion: refs.historicalImportAnalysisConclusion,
+          coverage: refs.historicalImportCoverageBody,
+          candidate: refs.historicalImportCandidateSummaryValue,
+          baseline: refs.historicalImportBaselineValue,
+        });
+      }
+
+      function collectReasoningAnalysisPayload() {
+        const commentaryValue = refs.reasoningAnalysisCommentarySelect.value || 'not_observed';
+        const finalOnlyValue = refs.reasoningAnalysisFinalOnlySelect.value || 'true';
+        return {
+          filters: {
+            date_from: reasoningBehaviorDateFrom,
+            date_to: reasoningBehaviorDateTo,
+            model_family: parseCsvText(refs.reasoningAnalysisModelFamilyInput.value),
+            reasoning_effort: parseCsvText(refs.reasoningAnalysisEffortInput.value),
+            status: refs.reasoningAnalysisStatusSelect.value || 'any',
+            include_retries: refs.reasoningAnalysisIncludeRetriesInput.checked,
+            include_blocked: refs.reasoningAnalysisIncludeBlockedInput.checked,
+          },
+          conditions: {
+            reasoning_tokens: parseNumberCsvText(refs.reasoningAnalysisTokenInput.value),
+            final_answer_only: finalOnlyValue === 'any' ? undefined : finalOnlyValue === 'true',
+            commentary_not_observed:
+              commentaryValue === 'any' ? undefined : commentaryValue === 'not_observed',
+            time_normalization_deviation: 'high',
+          },
+        };
+      }
+
+      async function runReasoningFeatureAnalysis() {
+        refs.reasoningAnalyzeButton.disabled = true;
+        try {
+          const response = await fetch(ui.reasoningBehaviorPath + '/analyze', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(collectReasoningAnalysisPayload()),
+            cache: 'no-store',
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload?.error?.message || 'reasoning 特征分析失败');
+          }
+          fillReasoningFeatureAnalysis(payload);
+        } finally {
+          refs.reasoningAnalyzeButton.disabled = false;
+        }
+      }
+
+      function fillReasoningBehavior(payload) {
+        const summary = payload?.summary || {};
+        refs.reasoningTotalSamplesValue.textContent = String(summary.total_samples ?? 0);
+        refs.reasoningFinalOnlyRatioValue.textContent = formatPercent(Number(summary.final_answer_only_ratio ?? 0));
+        refs.reasoningCommentaryRatioValue.textContent = formatPercent(Number(summary.commentary_observed_ratio ?? summary.commentary_present_ratio ?? 0));
+        refs.reasoningAvgDurationValue.textContent = formatMs(summary.avg_duration_total_ms);
+        refs.reasoningAvgOutputTpsValue.textContent = formatNumber(summary.avg_output_tps, 2);
+        refs.reasoningAvgAdjustedTpsValue.textContent = formatNumber(summary.avg_reasoning_adjusted_tps, 2);
+        refs.reasoningExportMeta.textContent =
+          summary.wording ||
+          '统计结果只表示可观测结构信号，用于发现候选异常特征，不代表最终归因，也不证明模型内部没有思考。final answer only / commentary observed 不是互补关系，剩余样本可能是 tool call、reasoning item 或普通 output 组合。';
+        refs.reasoningRangeChip.textContent = formatReasoningBehaviorDateRangeLabel(
+          reasoningBehaviorDateFrom,
+          reasoningBehaviorDateTo,
+        );
+        renderReasoningBars(refs.reasoningTopTokensChart, payload?.top_reasoning_tokens || [], {
+          emptyText: '暂无 reasoning token 分布',
+          label: (entry) => 'token ' + String(entry?.value ?? '-'),
+        });
+        renderReasoningBars(refs.reasoningOutputTpsChart, payload?.output_tps_buckets || [], {
+          emptyText: '暂无 output TPS 分布',
+          label: (entry) => String(entry?.label ?? '-'),
+        });
+        renderReasoningGroupedTable(refs.reasoningByModelFamilyBody, payload?.by_model_family || [], {
+          label: (entry) => entry.model_family || '-',
+        });
+        renderReasoningGroupedTable(refs.reasoningByEffortBody, payload?.by_reasoning_effort || [], {
+          label: (entry) => entry.reasoning_effort || '-',
+          adjusted: true,
+        });
+        renderReasoningGroupedTable(
+          refs.reasoningByFamilyEffortBody,
+          payload?.by_model_family_and_effort || [],
+          {
+            label: (entry) => entry.group_label || ((entry.model_family || '-') + ' / ' + (entry.reasoning_effort || '-')),
+          },
+        );
+        renderReasoningTokenTable(payload?.by_reasoning_token || []);
+        renderReasoningCandidatePatterns(payload?.candidate_patterns || []);
+        renderReasoningRecentSamples(payload?.recent_samples || []);
+      }
+
+      function formatBytes(value) {
+        const number = Number(value || 0);
+        if (!Number.isFinite(number) || number <= 0) {
+          return '0 B';
+        }
+        const units = ['B', 'KB', 'MB', 'GB'];
+        let size = number;
+        let unitIndex = 0;
+        while (size >= 1024 && unitIndex < units.length - 1) {
+          size /= 1024;
+          unitIndex += 1;
+        }
+        return size.toFixed(unitIndex === 0 ? 0 : 2) + ' ' + units[unitIndex];
+      }
+
+      function setHistoricalImportProgress(job, message) {
+        const percent = Math.max(0, Math.min(1, Number(job?.progress?.percent || 0)));
+        const hasProgress = Boolean(job && (percent > 0 || job.status === 'running' || job.status === 'completed' || job.status === 'failed'));
+        if (refs.historicalImportProgress) {
+          refs.historicalImportProgress.dataset.progressActive = hasProgress ? 'true' : 'false';
+        }
+        if (refs.historicalImportProgressFill) {
+          refs.historicalImportProgressFill.style.width = String(Math.round(percent * 100)) + '%';
+        }
+        if (refs.historicalImportProgressText) {
+          const processed = Number(job?.progress?.processed_sources || 0);
+          const total = Number(job?.progress?.total_sources || 0);
+          const step = job?.progress?.current_step || job?.status || 'queued';
+          refs.historicalImportProgressText.textContent =
+            message ||
+            '历史导入 ' + String(step) + '：已处理 ' + String(processed) + ' / ' + String(total) + ' 个数据源，可以继续正常使用 gateway。';
+        }
+      }
+
+      function renderHistoricalImportSources(rows) {
+        const entries = Array.isArray(rows) ? rows : [];
+        if (entries.length === 0) {
+          refs.historicalImportSourcesBody.innerHTML = '<tr><td colspan="4">暂无数据</td></tr>';
+          return;
+        }
+        refs.historicalImportSourcesBody.innerHTML = entries
+          .map((entry) => '<tr>' +
+            '<td>' + escapeHtml(entry.source_type || '-') + '</td>' +
+            '<td>' + escapeHtml(entry.status || '-') + '</td>' +
+            '<td>' + escapeHtml(entry.row_count ?? '-') + '</td>' +
+            '<td>' + escapeHtml(entry.path || '-') + '</td>' +
+          '</tr>')
+          .join('');
+      }
+
+      function renderHistoricalImportCcModels(rows) {
+        const entries = Array.isArray(rows) ? rows : [];
+        if (entries.length === 0) {
+          refs.historicalImportCcModelsBody.innerHTML = '<tr><td colspan="7">暂无数据</td></tr>';
+          return;
+        }
+        refs.historicalImportCcModelsBody.innerHTML = entries
+          .map((entry) => '<tr>' +
+            '<td>' + escapeHtml(entry.model || '-') + '</td>' +
+            '<td>' + escapeHtml(entry.count ?? 0) + '</td>' +
+            '<td>' + escapeHtml(entry.success_count ?? 0) + '</td>' +
+            '<td>' + escapeHtml(entry.failure_count ?? 0) + '</td>' +
+            '<td>' + escapeHtml(entry.input_tokens ?? 0) + '</td>' +
+            '<td>' + escapeHtml(entry.output_tokens ?? 0) + '</td>' +
+            '<td>' + formatMs(entry.avg_duration_ms) + '</td>' +
+          '</tr>')
+          .join('');
+      }
+
+      function renderHistoricalImportCodexLogs(job) {
+        const keywordHits = Array.isArray(job?.codex_logs?.keyword_hits)
+          ? job.codex_logs.keyword_hits
+          : [];
+        const levelRows = Array.isArray(job?.codex_logs?.by_level)
+          ? job.codex_logs.by_level.map((entry) => ({
+              keyword: 'level:' + String(entry.level || '-'),
+              count: entry.count,
+            }))
+          : [];
+        const entries = [...keywordHits, ...levelRows];
+        if (entries.length === 0) {
+          refs.historicalImportCodexLogsBody.innerHTML = '<tr><td colspan="2">暂无数据</td></tr>';
+          return;
+        }
+        refs.historicalImportCodexLogsBody.innerHTML = entries
+          .map((entry) => '<tr>' +
+            '<td>' + escapeHtml(entry.keyword || '-') + '</td>' +
+            '<td>' + escapeHtml(entry.count ?? 0) + '</td>' +
+          '</tr>')
+          .join('');
+      }
+
+      function renderHistoricalImportSessions(rows) {
+        const entries = Array.isArray(rows) ? rows : [];
+        if (entries.length === 0) {
+          refs.historicalImportSessionsBody.innerHTML = '<tr><td colspan="3">暂无数据</td></tr>';
+          return;
+        }
+        refs.historicalImportSessionsBody.innerHTML = entries
+          .map((entry) => '<tr>' +
+            '<td>' + escapeHtml(entry.path || '-') + '</td>' +
+            '<td>' + formatBytes(entry.bytes) + '</td>' +
+            '<td>' + formatTimestamp(entry.modified_at) + '</td>' +
+          '</tr>')
+          .join('');
+      }
+
+      function fillHistoricalImport(job) {
+        if (!job) {
+          setHistoricalImportProgress(
+            { progress: { processed_sources: 0, total_sources: 0, percent: 0 } },
+            '历史导入分析未开始，可以后台慢慢跑，不影响 gateway 正常代理。',
+          );
+          refs.historicalImportSummaryValue.textContent = '历史导入分析尚无结果。';
+          fillHistoricalFeatureAnalysis(null);
+          return;
+        }
+        setHistoricalImportProgress(job, job.status === 'completed' ? '历史导入分析完成。' : null);
+        const summary = job.summary || {};
+        refs.historicalImportSummaryValue.textContent =
+          '历史导入：数据源 ' + String(summary.source_count ?? 0) +
+          '，历史请求 ' + String(summary.total_requests ?? 0) +
+          '，成功 ' + String(summary.successful_requests ?? 0) +
+          '，失败 ' + String(summary.failed_requests ?? 0) +
+          '，输入 token ' + String(summary.total_input_tokens ?? 0) +
+          '，输出 token ' + String(summary.total_output_tokens ?? 0) +
+          '，平均延迟 ' + formatMs(summary.avg_latency_ms) +
+          '，Codex 日志 ' + String(summary.codex_log_rows ?? 0) +
+          '，session 文件 ' + String(summary.session_file_count ?? 0) +
+          '，session 体积 ' + formatBytes(summary.session_total_bytes) + '。';
+        fillHistoricalFeatureAnalysis(job);
+        renderHistoricalImportSources(job.sources || []);
+        renderHistoricalImportCcModels(job.cc_switch?.by_model || []);
+        renderHistoricalImportCodexLogs(job);
+        renderHistoricalImportSessions(job.sessions?.top_files || []);
+      }
+
+      async function pollHistoricalImportJob(jobId) {
+        if (!jobId) {
+          return;
+        }
+        const url = ui.historicalImportPath + '/jobs/' + encodeURIComponent(jobId);
+        const response = await fetch(url, { cache: 'no-store' });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error?.message || '历史导入任务状态查询失败');
+        }
+        const job = payload?.import_job;
+        fillHistoricalImport(job);
+        if (job?.status === 'completed' || job?.status === 'failed') {
+          return;
+        }
+        historicalImportPollTimer = window.setTimeout(() => {
+          pollHistoricalImportJob(jobId).catch((error) => setMessage(error?.message || String(error), 'error'));
+        }, 800);
+      }
+
+      async function runHistoricalImportAnalysis() {
+        if (historicalImportPollTimer) {
+          window.clearTimeout(historicalImportPollTimer);
+          historicalImportPollTimer = null;
+        }
+        refs.historicalImportRunButton.disabled = true;
+        setHistoricalImportProgress(
+          { progress: { processed_sources: 0, total_sources: 0, percent: 0 } },
+          '正在创建历史导入后台任务，可以继续正常使用 gateway。',
+        );
+        try {
+          const response = await fetch(ui.historicalImportPath + '/run', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({}),
+            cache: 'no-store',
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload?.error?.message || '历史导入分析启动失败');
+          }
+          fillHistoricalImport(payload.import_job);
+          if (payload?.import_job?.job_id) {
+            await pollHistoricalImportJob(payload.import_job.job_id);
+          }
+        } finally {
+          refs.historicalImportRunButton.disabled = false;
+        }
+      }
+
+      async function loadReasoningBehavior() {
+        const url = getReasoningBehaviorRequestUrl(ui.reasoningBehaviorPath);
+        const response = await fetch(url.toString(), { cache: 'no-store' });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error?.message || '读取 reasoning 行为统计失败');
+        }
+        fillReasoningBehavior(payload);
+      }
+
+      async function loadLatestHistoricalImport() {
+        const response = await fetch(ui.historicalImportPath + '/latest', { cache: 'no-store' });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error?.message || '读取历史导入分析失败');
+        }
+        fillHistoricalImport(payload.import_job || null);
+      }
+
+      function fillModelInsights(modelInsights) {
+        refs.modelMatchRatioValue.textContent = formatPercent(modelInsights?.consistency?.match_ratio ?? 0);
+        refs.modelMismatchCountValue.textContent = String(modelInsights?.consistency?.mismatched ?? 0);
+        refs.lowContextFamilyCountValue.textContent = String(modelInsights?.anomalies?.low_context_family_count ?? 0);
+        refs.modelDriftCountValue.textContent = String(modelInsights?.single_request_anomalies?.model_drift_count ?? 0);
+        refs.fingerprintDriftCountValue.textContent = String(modelInsights?.single_request_anomalies?.fingerprint_drift_count ?? 0);
+        refs.rebuildSuspectedCountValue.textContent = String(modelInsights?.single_request_anomalies?.rebuild_suspected_count ?? 0);
+        renderSuspiciousSamples(modelInsights?.suspicious_samples || []);
+      }
+
+      function fillActiveProbe(probe, options) {
+        const preferFormEnabled = Boolean(options?.preferFormEnabled);
+        setProbeEnabledValue(preferFormEnabled ? refs.probeAutoEnabledInput.checked : probe?.enabled);
+        refs.probeTargetModelValue.textContent = probe?.last_target_model || '-';
+        refs.probeLastRunValue.textContent = formatTimestamp(probe?.last_finished_at);
+        refs.probePassCountValue.textContent = String(probe?.pass_count ?? 0);
+        refs.probeWarningCountValue.textContent = String(probe?.warning_count ?? 0);
+        refs.probeViolationCountValue.textContent = String(probe?.violation_count ?? 0);
+        refs.probeTransportErrorCountValue.textContent = String(probe?.transport_error_count ?? 0);
+        renderProbeSamples(probe?.recent_samples || []);
+      }
+
+      function renderLogs(payload, replaceAll) {
+        const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+        const rendered = entries
+          .map((entry) => {
+            const at = entry?.at ? formatTimestamp(entry.at) : '-';
+            const message = entry?.message ? entry.message : '';
+            return at + ' ' + message;
+          })
+          .join('\n');
+
+        if (replaceAll) {
+          refs.logsOutput.textContent = rendered || '当前还没有日志。';
+        } else if (rendered) {
+          const current = refs.logsOutput.textContent.trim();
+          refs.logsOutput.textContent = current ? current + '\n' + rendered : rendered;
+        }
+
+        if (!rendered && replaceAll) {
+          refs.logsOutput.textContent = '当前还没有日志。';
+        }
+
+        refs.logsMeta.textContent =
+          '已载入 ' +
+          String(payload?.total_entries ?? entries.length) +
+          ' 条日志，最新序号 ' +
+          String(payload?.latest_seq ?? lastLogSeq) +
+          '。';
+        refs.logsOutput.scrollTop = refs.logsOutput.scrollHeight;
+        if (Number.isInteger(payload?.latest_seq)) {
+          lastLogSeq = payload.latest_seq;
+        }
+      }
+
+      async function loadLogs(incremental) {
+        const shouldReplaceAll = !incremental || lastLogSeq === 0 || logsNeedFullReload;
+        const url = new URL(ui.logsPath, window.location.origin);
+        const requestedSinceSeq = shouldReplaceAll ? null : lastLogSeq;
+        if (requestedSinceSeq !== null) {
+          url.searchParams.set('since_seq', String(lastLogSeq));
+        }
+        const response = await fetch(url.toString(), { cache: 'no-store' });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error?.message || '读取日志失败');
+        }
+        if (
+          requestedSinceSeq !== null &&
+          Number.isInteger(payload?.latest_seq) &&
+          payload.latest_seq < requestedSinceSeq
+        ) {
+          lastLogSeq = 0;
+          logsNeedFullReload = false;
+          await loadLogs(false);
+          return;
+        }
+        renderLogs(payload, shouldReplaceAll);
+        logsNeedFullReload = false;
+      }
+
+      async function loadStatus(options) {
+        const refreshForm = Boolean(options?.refreshForm);
+        const response = await fetch(ui.statusPath, { cache: 'no-store' });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error?.message || '读取状态失败');
+        }
+        const nextStartedAt = payload.metrics?.started_at || null;
+        if (lastGatewayStartedAt && nextStartedAt && nextStartedAt !== lastGatewayStartedAt) {
+          if (!reloadingForGatewayRestart && typeof window.location?.reload === 'function') {
+            reloadingForGatewayRestart = true;
+            window.location.reload();
+            return;
+          }
+        }
+        lastGatewayStartedAt = nextStartedAt;
+        fillStatus(payload, {
+          preferFormEnabled: hasLoadedForm && !refreshForm,
+        });
+        if (refreshForm || !hasLoadedForm) {
+          fillForm(payload.config || {});
+          hasLoadedForm = true;
+        }
+      }
+
+      async function saveConfig(event) {
+        event.preventDefault();
+        refs.saveButton.disabled = true;
+        setMessage('正在保存配置...', '');
+
+        try {
+          const interceptPayload = collectInterceptPayloadFromForm();
+          const response = await fetch(ui.configPath, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              reasoning_equals: parseReasoningInput(),
+              reasoning_match_mode: refs.reasoningMatchModeSelect.value,
+              endpoints: parseEndpointsInput(),
+              ...interceptPayload,
+              non_stream_status_code: Number.parseInt(refs.statusCodeInput.value, 10),
+              guard_retry_attempts: Number.parseInt(refs.guardRetryAttemptsInput.value, 10),
+              retry_upstream_capacity_errors: refs.retryUpstreamCapacityErrorsInput.checked,
+              log_match: refs.logMatchInput.checked,
+              active_probe: collectActiveProbeFormPayload(),
+            }),
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload?.error?.message || '保存失败');
+          }
+          fillStatus(payload);
+          fillForm(payload.config || {});
+          hasLoadedForm = true;
+          await loadLogs(false);
+          setMessage('配置已保存，并已对当前 gateway 立即生效。', 'success');
+        } catch (error) {
+          setMessage(error?.message || String(error), 'error');
+        } finally {
+          refs.saveButton.disabled = false;
+        }
+      }
+
+      async function runProbeNow() {
+        refs.probeRunButton.disabled = true;
+        setMessage('正在触发主动探针...', '');
+        try {
+          const response = await fetch('/__codex_retry_gateway/api/probe/run', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              active_probe: collectActiveProbeFormPayload(),
+            }),
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload?.error?.message || '触发主动探针失败');
+          }
+          await loadStatus({ refreshForm: false });
+          await loadLogs(false);
+          setMessage('主动探针已触发。', 'success');
+        } catch (error) {
+          setMessage(error?.message || String(error), 'error');
+        } finally {
+          refs.probeRunButton.disabled = false;
+        }
+      }
+
+      async function restoreConfig() {
+        if (!window.confirm('恢复后会关闭当前 gateway，并把 Codex 配置切回原上游。确定继续吗？')) {
+          return;
+        }
+
+        refs.restoreButton.disabled = true;
+        stoppedByRestore = true;
+        if (pollTimer) {
+          window.clearInterval(pollTimer);
+        }
+        setMessage('正在触发恢复，页面很快会失联...', '');
+
+        try {
+          const response = await fetch(ui.restorePath, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload?.error?.message || '恢复失败');
+          }
+          setMessage('恢复脚本已启动，等待 gateway 关闭。', 'success');
+        } catch (error) {
+          setMessage(error?.message || String(error), 'error');
+          refs.restoreButton.disabled = false;
+          return;
+        }
+
+        window.setTimeout(async () => {
+          try {
+            await fetch(ui.statusPath, { cache: 'no-store' });
+          } catch {
+            setMessage('gateway 已关闭，Codex 原设置应已恢复。', 'success');
+          }
+        }, 1200);
+      }
+
+      async function refreshLiveData() {
+        if (stoppedByRestore) {
+          return;
+        }
+        await loadStatus({ refreshForm: false });
+        await loadReasoningBehavior();
+        await loadLatestHistoricalImport();
+        await loadLogs(true);
+      }
+
+      refs.form.addEventListener('submit', saveConfig);
+      applyTheme(getStoredTheme());
+      if (refs.themeToggleButton) {
+        refs.themeToggleButton.addEventListener('click', toggleTheme);
+      }
+      [
+        refs.reasoningInput,
+        refs.reasoningMatchModeSelect,
+        refs.interceptRuleModeReasoningTokensInput,
+        refs.interceptRuleModeFinalOnlyInput,
+        refs.streamActionStrict502Input,
+        refs.streamActionDisconnectInput,
+        refs.streamActionContinuationRecoveryInput,
+        refs.statusCodeInput,
+        refs.guardRetryAttemptsInput,
+      ].forEach((control) => {
+        control.addEventListener('input', syncPolicySummaryFromForm);
+        control.addEventListener('change', syncPolicySummaryFromForm);
+      });
+      refs.reasoningMatchModeSelect.addEventListener('change', syncReasoningMatchModeFromForm);
+      refs.interceptStreamingInput.addEventListener('change', () => {
+        syncInterceptModeValueFromForm();
+        syncPolicySummaryFromForm();
+        if (!refs.interceptStreamingInput.checked && !refs.interceptNonStreamingInput.checked) {
+          setMessage('流式与非流式至少选择一个拦截目标。', 'error');
+        }
+      });
+      refs.interceptNonStreamingInput.addEventListener('change', () => {
+        syncInterceptModeValueFromForm();
+        syncPolicySummaryFromForm();
+        if (!refs.interceptStreamingInput.checked && !refs.interceptNonStreamingInput.checked) {
+          setMessage('流式与非流式至少选择一个拦截目标。', 'error');
+        }
+      });
+      refs.probeAutoEnabledInput.addEventListener('change', async () => {
+        if (refs.probeAutoEnabledInput.checked && !hasSelectedProbeTargetFamilies()) {
+          refs.probeAutoEnabledInput.checked = false;
+          syncProbeEnabledValueFromForm();
+          setMessage('开启自动探测前，至少选择一个探测目标模型。', 'error');
+          return;
+        }
+        syncProbeEnabledValueFromForm();
+        refs.probeAutoEnabledInput.disabled = true;
+        setMessage('正在保存主动探针配置...', '');
+        try {
+          await persistActiveProbeConfigFromControls();
+          setMessage('主动探针配置已保存，并已对当前 gateway 立即生效。', 'success');
+        } catch (error) {
+          refs.probeAutoEnabledInput.checked = !refs.probeAutoEnabledInput.checked;
+          syncProbeEnabledValueFromForm();
+          setMessage(error?.message || String(error), 'error');
+        } finally {
+          refs.probeAutoEnabledInput.disabled = false;
+        }
+      });
+      refs.probeRunButton.addEventListener('click', runProbeNow);
+      refs.reasoningRangeTodayButton.addEventListener('click', () => {
+        const today = toLocalDateInputValue(new Date());
+        setReasoningBehaviorDateRange(today, today);
+        loadReasoningBehavior().catch((error) => setMessage(error?.message || String(error), 'error'));
+      });
+      refs.reasoningRangeWeekButton.addEventListener('click', () => {
+        const today = new Date();
+        const weekStart = new Date(today);
+        weekStart.setDate(today.getDate() - 6);
+        setReasoningBehaviorDateRange(toLocalDateInputValue(weekStart), toLocalDateInputValue(today));
+        loadReasoningBehavior().catch((error) => setMessage(error?.message || String(error), 'error'));
+      });
+      refs.reasoningRangeApplyButton.addEventListener('click', () => {
+        setReasoningBehaviorDateRange(
+          refs.reasoningDateFromInput.value || null,
+          refs.reasoningDateToInput.value || null,
+        );
+        loadReasoningBehavior().catch((error) => setMessage(error?.message || String(error), 'error'));
+      });
+      refs.reasoningExportJsonButton.addEventListener('click', () => {
+        openReasoningBehaviorExport('json').catch((error) => setMessage(error?.message || String(error), 'error'));
+      });
+      refs.reasoningExportCsvButton.addEventListener('click', () => {
+        openReasoningBehaviorExport('csv').catch((error) => setMessage(error?.message || String(error), 'error'));
+      });
+      refs.reasoningTokenTableLimitSelect.addEventListener('change', () => {
+        renderReasoningTokenTable(latestReasoningTokenRows);
+      });
+      refs.reasoningCandidatePatternLimitSelect.addEventListener('change', () => {
+        renderReasoningCandidatePatterns(latestReasoningCandidatePatternRows);
+      });
+      refs.reasoningRecentSamplesLimitSelect.addEventListener('change', () => {
+        renderReasoningRecentSamples(latestReasoningRecentSampleRows);
+      });
+      refs.reasoningAnalyzeButton.addEventListener('click', () => {
+        runReasoningFeatureAnalysis().catch((error) => setMessage(error?.message || String(error), 'error'));
+      });
+      refs.historicalImportRunButton.addEventListener('click', () => {
+        runHistoricalImportAnalysis().catch((error) => setMessage(error?.message || String(error), 'error'));
+      });
+      refs.restoreButton.addEventListener('click', restoreConfig);
+      refs.suspiciousSamplesBody.addEventListener('click', (event) => {
+        rememberEvidenceSummaryIntent(event, openSuspiciousEvidenceSampleKeys);
+      });
+      refs.suspiciousSamplesBody.addEventListener('toggle', (event) => {
+        const details = event.target;
+        if (!details || details.tagName !== 'DETAILS' || !details.classList.contains('evidence-details')) {
+          return;
+        }
+        const sampleKey = details.getAttribute('data-sample-key');
+        if (!sampleKey) {
+          return;
+        }
+        if (details.open) {
+          openSuspiciousEvidenceSampleKeys.add(sampleKey);
+        } else {
+          openSuspiciousEvidenceSampleKeys.delete(sampleKey);
+        }
+      });
+      refs.probeSamplesBody.addEventListener('click', (event) => {
+        rememberEvidenceSummaryIntent(event, openProbeEvidenceSampleKeys);
+      });
+      refs.probeSamplesBody.addEventListener('toggle', (event) => {
+        const details = event.target;
+        if (!details || details.tagName !== 'DETAILS' || !details.classList.contains('evidence-details')) {
+          return;
+        }
+        const sampleKey = details.getAttribute('data-sample-key');
+        if (!sampleKey) {
+          return;
+        }
+        if (details.open) {
+          openProbeEvidenceSampleKeys.add(sampleKey);
+        } else {
+          openProbeEvidenceSampleKeys.delete(sampleKey);
+        }
+      });
+
+      loadStatus({ refreshForm: true })
+        .then(() => loadReasoningBehavior())
+        .then(() => loadLatestHistoricalImport())
+        .then(() => loadLogs(false))
+        .then(() => {
+          pollTimer = window.setInterval(() => {
+            refreshLiveData().catch((error) => {
+              if (!stoppedByRestore) {
+                setMessage(error?.message || String(error), 'error');
+              }
+            });
+          }, 2000);
+        })
+        .catch((error) => {
+          setMessage(error?.message || String(error), 'error');
+        });
+    </script>
+  </body>
+</html>
