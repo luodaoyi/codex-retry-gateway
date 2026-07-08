@@ -60,10 +60,26 @@ func sanitizeRequestHeaders(headers http.Header) map[string]string {
 func buildRequestSummary(body []byte, headers http.Header) map[string]any {
 	hash := sha256.Sum256(body)
 	return map[string]any{
-		"body_bytes":         len(body),
-		"body_sha256":        hex.EncodeToString(hash[:]),
-		"sanitized_headers":  sanitizeRequestHeaders(headers),
+		"body_bytes":        len(body),
+		"body_sha256":       hex.EncodeToString(hash[:]),
+		"sanitized_headers": sanitizeRequestHeaders(headers),
 	}
+}
+
+func truncateText(value string, maxLength int) string {
+	if maxLength <= 0 || len(value) <= maxLength {
+		return value
+	}
+	return value[:maxLength]
+}
+
+func buildRequestPayloadExcerpt(body []byte) string {
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		redacted, _ := json.Marshal(stripEncryptedContent(parsed))
+		return truncateText(string(redacted), 500)
+	}
+	return truncateText(redactEncryptedContentText(string(body)), 500)
 }
 
 func cloneHeadersForUpstream(headers http.Header) http.Header {

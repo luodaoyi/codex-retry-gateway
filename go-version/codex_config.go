@@ -19,9 +19,6 @@ import (
 
 const (
 	installModeProvider = "provider_base_url"
-	installModeNative   = "native_openai_oauth"
-	managedProviderName = "codex_retry_gateway_openai"
-	defaultOpenAIURL    = "https://api.openai.com"
 )
 
 type providerContext struct {
@@ -35,18 +32,17 @@ type providerContext struct {
 }
 
 type installState struct {
-	InstalledAt         string `json:"installed_at"`
-	InstallMode         string `json:"install_mode"`
-	CodexConfigPath     string `json:"codex_config_path"`
-	ProviderName        string `json:"provider_name,omitempty"`
-	ManagedProviderName string `json:"managed_provider_name,omitempty"`
-	OriginalBaseURL     string `json:"original_base_url"`
-	GatewayBaseURL      string `json:"gateway_base_url"`
-	GatewayConfigPath   string `json:"gateway_config_path"`
-	GatewayLogPath      string `json:"gateway_log_path"`
-	GatewayPIDPath      string `json:"gateway_pid_path"`
-	LatestBackupPath    string `json:"latest_backup_path"`
-	StateRoot           string `json:"state_root"`
+	InstalledAt       string `json:"installed_at"`
+	InstallMode       string `json:"install_mode"`
+	CodexConfigPath   string `json:"codex_config_path"`
+	ProviderName      string `json:"provider_name,omitempty"`
+	OriginalBaseURL   string `json:"original_base_url"`
+	GatewayBaseURL    string `json:"gateway_base_url"`
+	GatewayConfigPath string `json:"gateway_config_path"`
+	GatewayLogPath    string `json:"gateway_log_path"`
+	GatewayPIDPath    string `json:"gateway_pid_path"`
+	LatestBackupPath  string `json:"latest_backup_path"`
+	StateRoot         string `json:"state_root"`
 }
 
 func getCodexProviderContext(codexConfigPath string) (*providerContext, error) {
@@ -120,69 +116,6 @@ func setCodexProviderBaseURL(codexConfigPath string, providerName string, newBas
 	updatedSection := regexp.MustCompile(`(?m)^(\s*base_url\s*=\s*")([^"]*)("\s*)$`).ReplaceAllString(context.SectionText, `${1}`+newBaseURL+`${3}`)
 	updatedContent := context.Content[:context.SectionIndex] + updatedSection + context.Content[context.SectionIndex+context.SectionLength:]
 	return os.WriteFile(codexConfigPath, []byte(updatedContent), 0o644)
-}
-
-func detectInstallMode(codexConfigPath string) (mode string, providerName string, originalBaseURL string, err error) {
-	context, contextErr := getCodexProviderContext(codexConfigPath)
-	if contextErr == nil {
-		return installModeProvider, context.ProviderName, context.CurrentBaseURL, nil
-	}
-	contentBytes, err := os.ReadFile(codexConfigPath)
-	if err != nil {
-		return "", "", "", err
-	}
-	content := string(contentBytes)
-	if strings.Contains(contextErr.Error(), "model_provider was not found") {
-		return installModeNative, "", defaultOpenAIURL, nil
-	}
-
-	// Provider configured but no base_url. Treat it like native OpenAI auth if it still requests OpenAI auth.
-	providerMatch := regexp.MustCompile(`(?m)^\s*model_provider\s*=\s*"([^"]+)"\s*$`).FindStringSubmatch(content)
-	if providerMatch != nil {
-		providerName = providerMatch[1]
-		if extractProviderBooleanSetting(content, providerName, "requires_openai_auth") {
-			return installModeNative, providerName, defaultOpenAIURL, nil
-		}
-	}
-	return "", "", "", contextErr
-}
-
-func ensureGatewayProvider(content string, gatewayBaseURL string) string {
-	managedSection := strings.Join([]string{
-		fmt.Sprintf(`[model_providers.%s]`, managedProviderName),
-		`name = "OpenAI"`,
-		fmt.Sprintf(`base_url = "%s"`, gatewayBaseURL),
-		`requires_openai_auth = true`,
-		`wire_api = "responses"`,
-		`request_max_retries = 100`,
-		`stream_max_retries = 20`,
-		`stream_idle_timeout_ms = 300000`,
-		"",
-	}, "\n")
-
-	result := content
-	if regexp.MustCompile(`(?m)^\s*model_provider\s*=`).MatchString(result) {
-		result = regexp.MustCompile(`(?m)^\s*model_provider\s*=\s*"[^"]+"\s*$`).ReplaceAllString(result, fmt.Sprintf(`model_provider = "%s"`, managedProviderName))
-	} else {
-		result = fmt.Sprintf("model_provider = \"%s\"\n%s", managedProviderName, result)
-	}
-
-	sectionText, startIndex, endIndex := extractProviderSection(result, managedProviderName)
-	if sectionText != "" {
-		result = result[:startIndex] + strings.TrimSuffix(managedSection, "\n") + result[endIndex:]
-		if !strings.HasSuffix(result, "\n") {
-			result += "\n"
-		}
-		return result
-	}
-
-	if !strings.HasSuffix(result, "\n") {
-		result += "\n"
-	}
-	if !strings.HasSuffix(result, "\n\n") {
-		result += "\n"
-	}
-	return result + managedSection
 }
 
 func extractProviderSection(content string, providerName string) (section string, startIndex int, endIndex int) {
@@ -265,10 +198,12 @@ func installGateway(options installOptions) (installState, gatewayConfig, error)
 		return installState{}, gatewayConfig{}, fmt.Errorf("Codex config file was not found: %s", options.CodexConfigPath)
 	}
 
-	mode, providerName, originalBaseURL, err := detectInstallMode(options.CodexConfigPath)
+	providerContext, err := getCodexProviderContext(options.CodexConfigPath)
 	if err != nil {
 		return installState{}, gatewayConfig{}, err
 	}
+	providerName := providerContext.ProviderName
+	originalBaseURL := providerContext.CurrentBaseURL
 
 	existingState, err := readInstallState(paths.StatePath)
 	if err != nil {
@@ -315,35 +250,23 @@ func installGateway(options installOptions) (installState, gatewayConfig, error)
 		return installState{}, gatewayConfig{}, err
 	}
 
-	switch mode {
-	case installModeProvider:
-		if err := setCodexProviderBaseURL(options.CodexConfigPath, providerName, gatewayBaseURL); err != nil {
-			_ = os.WriteFile(options.CodexConfigPath, originalContent, 0o644)
-			return installState{}, gatewayConfig{}, err
-		}
-	case installModeNative:
-		updated := ensureGatewayProvider(string(originalContent), gatewayBaseURL)
-		if err := os.WriteFile(options.CodexConfigPath, []byte(updated), 0o644); err != nil {
-			_ = os.WriteFile(options.CodexConfigPath, originalContent, 0o644)
-			return installState{}, gatewayConfig{}, err
-		}
-	default:
-		return installState{}, gatewayConfig{}, fmt.Errorf("unsupported install mode: %s", mode)
+	if err := setCodexProviderBaseURL(options.CodexConfigPath, providerName, gatewayBaseURL); err != nil {
+		_ = os.WriteFile(options.CodexConfigPath, originalContent, 0o644)
+		return installState{}, gatewayConfig{}, err
 	}
 
 	state := installState{
-		InstalledAt:         time.Now().Format(time.RFC3339),
-		InstallMode:         mode,
-		CodexConfigPath:     options.CodexConfigPath,
-		ProviderName:        providerName,
-		ManagedProviderName: managedProviderName,
-		OriginalBaseURL:     originalBaseURL,
-		GatewayBaseURL:      gatewayBaseURL,
-		GatewayConfigPath:   paths.ConfigPath,
-		GatewayLogPath:      paths.LogPath,
-		GatewayPIDPath:      paths.PIDPath,
-		LatestBackupPath:    backupPath,
-		StateRoot:           paths.StateRoot,
+		InstalledAt:       time.Now().Format(time.RFC3339),
+		InstallMode:       installModeProvider,
+		CodexConfigPath:   options.CodexConfigPath,
+		ProviderName:      providerName,
+		OriginalBaseURL:   originalBaseURL,
+		GatewayBaseURL:    gatewayBaseURL,
+		GatewayConfigPath: paths.ConfigPath,
+		GatewayLogPath:    paths.LogPath,
+		GatewayPIDPath:    paths.PIDPath,
+		LatestBackupPath:  backupPath,
+		StateRoot:         paths.StateRoot,
 	}
 	if err := writeInstallState(paths.StatePath, state); err != nil {
 		return installState{}, gatewayConfig{}, err
@@ -370,27 +293,22 @@ func readRuntimeState(paths gatewayPaths) (map[string]any, error) {
 	}
 
 	payload := map[string]any{
-		"installed_at":          state.InstalledAt,
-		"install_mode":          state.InstallMode,
-		"codex_config_path":     state.CodexConfigPath,
-		"provider_name":         state.ProviderName,
-		"managed_provider_name": state.ManagedProviderName,
-		"original_base_url":     state.OriginalBaseURL,
-		"gateway_base_url":      state.GatewayBaseURL,
-		"gateway_config_path":   state.GatewayConfigPath,
-		"gateway_log_path":      state.GatewayLogPath,
-		"gateway_pid_path":      state.GatewayPIDPath,
-		"latest_backup_path":    state.LatestBackupPath,
-		"state_root":            state.StateRoot,
+		"installed_at":        state.InstalledAt,
+		"install_mode":        state.InstallMode,
+		"codex_config_path":   state.CodexConfigPath,
+		"provider_name":       state.ProviderName,
+		"original_base_url":   state.OriginalBaseURL,
+		"gateway_base_url":    state.GatewayBaseURL,
+		"gateway_config_path": state.GatewayConfigPath,
+		"gateway_log_path":    state.GatewayLogPath,
+		"gateway_pid_path":    state.GatewayPIDPath,
+		"latest_backup_path":  state.LatestBackupPath,
+		"state_root":          state.StateRoot,
 	}
 
 	content, err := os.ReadFile(state.CodexConfigPath)
 	if err == nil {
-		provider := state.ProviderName
-		if provider == "" {
-			provider = state.ManagedProviderName
-		}
-		payload["codex_current_base_url"] = extractProviderBaseURL(string(content), provider)
+		payload["codex_current_base_url"] = extractProviderBaseURL(string(content), state.ProviderName)
 	}
 	return payload, nil
 }

@@ -13,14 +13,15 @@ const (
 )
 
 type gatewayPaths struct {
-	StateRoot  string `json:"state_root"`
-	ConfigDir  string `json:"config_dir"`
-	ConfigPath string `json:"config_path"`
-	LogDir     string `json:"log_dir"`
-	LogPath    string `json:"log_path"`
-	BackupDir  string `json:"backup_dir"`
-	StatePath  string `json:"state_path"`
-	PIDPath    string `json:"pid_path"`
+	StateRoot     string `json:"state_root"`
+	ConfigDir     string `json:"config_dir"`
+	ConfigPath    string `json:"config_path"`
+	LogDir        string `json:"log_dir"`
+	LogPath       string `json:"log_path"`
+	BackupDir     string `json:"backup_dir"`
+	AnalyticsRoot string `json:"analytics_root"`
+	StatePath     string `json:"state_path"`
+	PIDPath       string `json:"pid_path"`
 }
 
 func defaultCodexConfigPath() string {
@@ -40,13 +41,14 @@ func defaultStateRoot() string {
 
 func buildGatewayPaths(stateRoot string) gatewayPaths {
 	return gatewayPaths{
-		StateRoot:  stateRoot,
-		ConfigDir:  filepath.Join(stateRoot, "config"),
-		ConfigPath: filepath.Join(stateRoot, "config", "config.json"),
-		LogDir:     filepath.Join(stateRoot, "logs"),
-		LogPath:    filepath.Join(stateRoot, "logs", "gateway.log"),
-		BackupDir:  filepath.Join(stateRoot, "backups"),
-		StatePath:  filepath.Join(stateRoot, "state.json"),
-		PIDPath:    filepath.Join(stateRoot, "gateway.pid"),
+		StateRoot:     stateRoot,
+		ConfigDir:     filepath.Join(stateRoot, "config"),
+		ConfigPath:    filepath.Join(stateRoot, "config", "config.json"),
+		LogDir:        filepath.Join(stateRoot, "logs"),
+		LogPath:       filepath.Join(stateRoot, "logs", "gateway.log"),
+		BackupDir:     filepath.Join(stateRoot, "backups"),
+		AnalyticsRoot: filepath.Join(stateRoot, "analytics"),
+		StatePath:     filepath.Join(stateRoot, "state.json"),
+		PIDPath:       filepath.Join(stateRoot, "gateway.pid"),
 	}
 }

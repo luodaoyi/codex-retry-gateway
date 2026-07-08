@@ -35,18 +35,18 @@ var finalOnlyInterceptEfforts = map[string]bool{"high": true, "xhigh": true}
 var contextCompactionMarkers = []string{"remote_compaction", "context_compaction"}
 
 type activeProbeConfig struct {
-	Enabled            bool                           `json:"enabled"`
-	IntervalMS         int                            `json:"interval_ms"`
-	StartupDelayMS     int                            `json:"startup_delay_ms"`
-	TimeoutMS          int                            `json:"timeout_ms"`
-	TargetFamilies     []string                       `json:"target_families,omitempty"`
-	EndpointCandidates []string                       `json:"endpoint_candidates"`
-	ImageInput         map[string]any                 `json:"image_input,omitempty"`
-	ResponseStructure  map[string]any                 `json:"response_structure,omitempty"`
-	IdentityConsistency map[string]any                `json:"identity_consistency,omitempty"`
-	KnowledgeCutoff    map[string]any                 `json:"knowledge_cutoff,omitempty"`
-	LongContext        map[string]any                 `json:"long_context,omitempty"`
-	Raw                map[string]any                 `json:"-"`
+	Enabled             bool           `json:"enabled"`
+	IntervalMS          int            `json:"interval_ms"`
+	StartupDelayMS      int            `json:"startup_delay_ms"`
+	TimeoutMS           int            `json:"timeout_ms"`
+	TargetFamilies      []string       `json:"target_families,omitempty"`
+	EndpointCandidates  []string       `json:"endpoint_candidates"`
+	ImageInput          map[string]any `json:"image_input,omitempty"`
+	ResponseStructure   map[string]any `json:"response_structure,omitempty"`
+	IdentityConsistency map[string]any `json:"identity_consistency,omitempty"`
+	KnowledgeCutoff     map[string]any `json:"knowledge_cutoff,omitempty"`
+	LongContext         map[string]any `json:"long_context,omitempty"`
+	Raw                 map[string]any `json:"-"`
 }
 
 type gatewayConfig struct {
@@ -89,16 +89,16 @@ func defaultGatewayConfig() gatewayConfig {
 		LogMatch:                    true,
 		HealthPath:                  defaultHealthPath,
 		ActiveProbe: activeProbeConfig{
-			Enabled:            false,
-			IntervalMS:         900000,
-			StartupDelayMS:     60000,
-			TimeoutMS:          120000,
-			EndpointCandidates: []string{"/responses", "/v1/responses"},
-			ImageInput:         map[string]any{"enabled": true},
-			ResponseStructure:  map[string]any{"enabled": false, "repeat_count": 2},
+			Enabled:             false,
+			IntervalMS:          900000,
+			StartupDelayMS:      60000,
+			TimeoutMS:           120000,
+			EndpointCandidates:  []string{"/responses", "/v1/responses"},
+			ImageInput:          map[string]any{"enabled": true},
+			ResponseStructure:   map[string]any{"enabled": false, "repeat_count": 2},
 			IdentityConsistency: map[string]any{"enabled": false, "repeat_count": 2},
-			KnowledgeCutoff:    map[string]any{"enabled": false, "max_questions": 3},
-			LongContext:        map[string]any{"enabled": true, "target_input_tokens": 460000},
+			KnowledgeCutoff:     map[string]any{"enabled": false, "max_questions": 3},
+			LongContext:         map[string]any{"enabled": true, "target_input_tokens": 460000},
 		},
 	}
 }
@@ -252,8 +252,15 @@ func buildEditableConfig(current gatewayConfig, payload map[string]any) (gateway
 		next.LogMatch = optionalBool(payload["log_match"], current.LogMatch)
 	}
 	if _, ok := payload["active_probe"]; ok {
+		activeProbePayload, _ := payload["active_probe"].(map[string]any)
+		requestedActiveProbeEnabled := current.ActiveProbe.Enabled
+		if activeProbePayload != nil {
+			if _, hasEnabled := activeProbePayload["enabled"]; hasEnabled {
+				requestedActiveProbeEnabled = optionalBool(activeProbePayload["enabled"], current.ActiveProbe.Enabled)
+			}
+		}
 		next.ActiveProbe = normalizeActiveProbeConfig(payload["active_probe"], current.ActiveProbe)
-		if next.ActiveProbe.Enabled && len(next.ActiveProbe.TargetFamilies) == 0 {
+		if requestedActiveProbeEnabled && len(next.ActiveProbe.TargetFamilies) == 0 {
 			return gatewayConfig{}, errors.New("开启自动探测前，至少选择一个探测目标模型")
 		}
 	}
@@ -269,19 +276,50 @@ func normalizeActiveProbeConfig(raw any, fallback activeProbeConfig) activeProbe
 	if !ok {
 		return next
 	}
-	next.Enabled = optionalBool(payload["enabled"], fallback.Enabled)
+	requestedEnabled := optionalBool(payload["enabled"], fallback.Enabled)
 	next.IntervalMS, _ = parseOptionalInt(payload["interval_ms"], fallback.IntervalMS)
 	next.StartupDelayMS, _ = parseOptionalInt(payload["startup_delay_ms"], fallback.StartupDelayMS)
 	next.TimeoutMS, _ = parseOptionalInt(payload["timeout_ms"], fallback.TimeoutMS)
-	next.TargetFamilies = normalizeStringList(payload["target_families"], fallback.TargetFamilies)
+	next.TargetFamilies = normalizeActiveProbeTargetFamilies(payload["target_families"], fallback.TargetFamilies)
 	next.EndpointCandidates = normalizeStringList(payload["endpoint_candidates"], fallback.EndpointCandidates)
 	next.ImageInput = normalizeMap(payload["image_input"], fallback.ImageInput)
 	next.ResponseStructure = normalizeMap(payload["response_structure"], fallback.ResponseStructure)
 	next.IdentityConsistency = normalizeMap(payload["identity_consistency"], fallback.IdentityConsistency)
 	next.KnowledgeCutoff = normalizeMap(payload["knowledge_cutoff"], fallback.KnowledgeCutoff)
 	next.LongContext = normalizeMap(payload["long_context"], fallback.LongContext)
+	next.Enabled = requestedEnabled && len(next.TargetFamilies) > 0
 	next.Raw = payload
 	return next
+}
+
+func normalizeActiveProbeTargetFamilies(raw any, fallback []string) []string {
+	var source []string
+	switch value := raw.(type) {
+	case nil:
+		source = append([]string{}, fallback...)
+	case []string:
+		source = value
+	case []any:
+		for _, item := range value {
+			if text := strings.Trim(strings.TrimSpace(anyToString(item)), "/"); text != "" {
+				source = append(source, text)
+			}
+		}
+	default:
+		if text := strings.Trim(strings.TrimSpace(anyToString(value)), "/"); text != "" {
+			source = append(source, text)
+		}
+	}
+
+	result := make([]string, 0, len(source))
+	for _, item := range source {
+		family := normalizeModelFamily(strings.Trim(strings.TrimSpace(item), "/"))
+		if family == "" || family == "unknown" || slices.Contains(result, family) {
+			continue
+		}
+		result = append(result, family)
+	}
+	return result
 }
 
 func normalizeInterceptRuleMode(raw string, fallback string) string {
